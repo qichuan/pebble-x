@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peep Settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f5f5; color: #1a1a1a;
+    margin: 0; padding: 24px 16px; max-width: 420px; margin-inline: auto;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #121212; color: #eee; }
+    input { background: #1e1e1e; color: #eee; border-color: #444 !important; }
+    .card { background: #1e1e1e; }
+    .hint { color: #999; }
+  }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: #777; margin: 0 0 24px; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 10px 12px; font-size: 15px;
+    border: 1px solid #ccc; border-radius: 8px;
+  }
+  .hint { font-size: 12px; color: #777; margin: 6px 0 16px; }
+  button {
+    width: 100%; padding: 12px; font-size: 16px; font-weight: 600;
+    border: 0; border-radius: 8px; cursor: pointer; margin-top: 8px;
+  }
+  .primary { background: #1d9bf0; color: #fff; }
+  .danger { background: transparent; color: #f4212e; }
+  #msg { margin-top: 16px; font-size: 14px; text-align: center; min-height: 20px; }
+  .warn { color: #b45309; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px;
+           background: #d1fae5; color: #065f46; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+  <h1>Peep</h1>
+  <p class="sub">X client for Pebble</p>
+
+  <div class="card">
+    <div id="status_badge" class="badge" style="display:none">Logged in</div>
+    <label for="client_id">X app Client ID</label>
+    <input id="client_id" placeholder="e.g. WFhYWFhYWFhYWFhYWFhYWFhY" autocomplete="off"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <p class="hint">From <b>developer.x.com</b> &rarr; your project &rarr; your app &rarr;
+      Keys and tokens &rarr; OAuth 2.0 Client ID. The app must be a public client with
+      this page's URL registered as the redirect URI.</p>
+    <button id="login" class="primary">Log in with X</button>
+    <button id="logout" class="danger" style="display:none">Log out</button>
+  </div>
+  <div id="msg"></div>
+
+<script>
+(function () {
+  function qs(name) {
+    var match = new RegExp('[?&]' + name + '=([^&]*)').exec(location.search);
+    return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : null;
+  }
+  function setMsg(text, cls) {
+    var el = document.getElementById('msg');
+    el.textContent = text;
+    el.className = cls || '';
+  }
+
+  var REDIRECT_URI = location.origin + location.pathname;
+  var input = document.getElementById('client_id');
+
+  // Leg 1: opened from the Pebble app (pkjs passes PKCE challenge + state).
+  // Stash everything in sessionStorage so it survives the round-trip to x.com.
+  if (qs('challenge')) {
+    sessionStorage.setItem('challenge', qs('challenge'));
+    sessionStorage.setItem('state', qs('state') || '');
+    sessionStorage.setItem('return_to', qs('return_to') || 'pebblejs://close#');
+    sessionStorage.setItem('logged_in', qs('logged_in') || '0');
+    if (qs('client_id')) sessionStorage.setItem('client_id', qs('client_id'));
+  } else if (qs('return_to')) {
+    sessionStorage.setItem('return_to', qs('return_to'));
+  }
+
+  input.value = sessionStorage.getItem('client_id') || '';
+  if (sessionStorage.getItem('logged_in') === '1') {
+    document.getElementById('status_badge').style.display = 'inline-block';
+    document.getElementById('logout').style.display = 'block';
+  }
+
+  function returnToApp(payload) {
+    var returnTo = sessionStorage.getItem('return_to') || 'pebblejs://close#';
+    location.href = returnTo + encodeURIComponent(JSON.stringify(payload));
+  }
+
+  // Leg 2: redirected back from x.com with an authorization code.
+  if (qs('code')) {
+    setMsg('Finishing login… returning to the Pebble app.');
+    returnToApp({
+      action: 'login',
+      code: qs('code'),
+      state: qs('state'),
+      clientId: sessionStorage.getItem('client_id') || ''
+    });
+    return;
+  }
+  if (qs('error')) {
+    setMsg('X login was cancelled or denied (' + qs('error') + ').', 'warn');
+  }
+
+  if (!sessionStorage.getItem('challenge')) {
+    setMsg('Open this page from the Peep settings in the Pebble app.', 'warn');
+  }
+
+  document.getElementById('login').addEventListener('click', function () {
+    var clientId = input.value.trim();
+    if (!clientId) { setMsg('Enter your X app Client ID first.', 'warn'); return; }
+    var challenge = sessionStorage.getItem('challenge');
+    if (!challenge) { setMsg('Missing login session — reopen from the Pebble app.', 'warn'); return; }
+    sessionStorage.setItem('client_id', clientId);
+    location.href = 'https://x.com/i/oauth2/authorize' +
+      '?response_type=code' +
+      '&client_id=' + encodeURIComponent(clientId) +
+      '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) +
+      '&scope=' + encodeURIComponent('tweet.read users.read like.write offline.access') +
+      '&state=' + encodeURIComponent(sessionStorage.getItem('state') || '') +
+      '&code_challenge=' + encodeURIComponent(challenge) +
+      '&code_challenge_method=S256';
+  });
+
+  document.getElementById('logout').addEventListener('click', function () {
+    returnToApp({ action: 'logout' });
+  });
+})();
+</script>
+</body>
+</html>

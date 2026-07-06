@@ -1,0 +1,41 @@
+{
+  "name": "Peep",
+  "author": "MakeAwesomeHappen",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Peep",
+    "uuid": "46056075-4bc7-4d0c-8c90-51e4bba892fd",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "CMD",
+      "LIKE_INDEX",
+      "TWEET_INDEX",
+      "TWEET_COUNT",
+      "AUTHOR",
+      "TEXT",
+      "TIME_AGO",
+      "LIKED",
+      "STATUS",
+      "LIKE_RESULT"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
