@@ -24,10 +24,9 @@ SETUP_HTML = r"""<!DOCTYPE html>
   @media (prefers-color-scheme: dark) {
     body { background: #121212; color: #eee; }
     input, textarea { background: #1e1e1e; color: #eee; border-color: #444 !important; }
-    .card { background: #1e1e1e; }
-    .hint, .sub { color: #999; }
-    label { color: #eee !important; }
-    code { background: #333; }
+    .sub { color: #eee !important; }
+    .card, .card label, .card .hint, .card ol { color: #000 !important; }
+    .card code { background: #eee; color: #000; }
   }
   h1 { font-size: 24px; margin: 0 0 4px; }
   .sub { color: #000; margin: 0 0 24px; }
