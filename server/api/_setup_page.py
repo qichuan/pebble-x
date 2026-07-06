@@ -2,9 +2,10 @@
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 
-Same-origin with /api/config, so no CORS. The page contains no secrets — the
-user types the APP_TOKEN into it and it is sent as a Bearer header, never
-persisted anywhere in the browser.
+Same-origin with /api/config, so no CORS. On an unclaimed server the first save
+claims it: the server mints the access token, the wizard keeps it in this
+browser's localStorage, and the watch gets it via the short pairing code — the
+user never handles the long secret.
 """
 
 SETUP_HTML = r"""<!DOCTYPE html>
@@ -48,6 +49,11 @@ SETUP_HTML = r"""<!DOCTYPE html>
   .primary:disabled { opacity: .5; cursor: default; }
   #found { font-size: 13px; margin: 6px 0 4px; min-height: 18px; }
   #msg { margin-top: 16px; font-size: 14px; text-align: center; min-height: 20px; }
+  .paircode {
+    color: #000; font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 28px; font-weight: 700; letter-spacing: 3px; text-align: center;
+    padding: 10px 0 4px;
+  }
   .ok { color: #15803d; }
   .warn { color: #b45309; }
   .err { color: #b91c1c; }
@@ -63,19 +69,27 @@ SETUP_HTML = r"""<!DOCTYPE html>
       <li>On a <b>computer</b>, log in at <a href="https://x.com" target="_blank" rel="noopener">x.com</a>.</li>
       <li>Open DevTools (<code>F12</code> or <code>Cmd&#8288;+&#8288;Opt&#8288;+&#8288;I</code>)
           &rarr; <b>Network</b> tab &rarr; reload the page.</li>
-      <li>Right-click any request in the list &rarr; <b>Copy</b> &rarr;
-          <b>Copy as cURL</b>.</li>
+      <li>Type <code>home</code> in the filter box, right-click the <code>home</code>
+          request (domain <b>x.com</b>) &rarr; <b>Copy</b> &rarr; <b>Copy as cURL</b>.</li>
       <li>Paste it all below. Only the two session cookies are extracted and sent
-          &mdash; to <b>this server</b>, nowhere else.</li>
+          &mdash; to <b>this server</b>, nowhere else. Any request to <b>x.com</b> or
+          <b>api.x.com</b> works; requests to <b>twimg.com</b> (images/CDN) don't
+          carry the cookies.</li>
     </ol>
   </div>
 
   <div class="card">
-    <label for="token">Access token</label>
-    <input id="token" placeholder="the APP_TOKEN you set when deploying"
-           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <p class="hint">Set as the <b>APP_TOKEN</b> env var on this server. Also used in the
-      watch settings.</p>
+    <p id="claim_note" class="hint" style="display:none">This server is brand new &mdash;
+      saving will claim it and generate its access secret automatically.</p>
+
+    <div id="token_row" style="display:none">
+      <label for="token">Access token</label>
+      <input id="token" placeholder="this server's access token"
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <p class="hint">This server is already claimed and this browser doesn't know its
+        token. Enter it, or reset by deleting the <b>tweetfit:app_token</b> key in the
+        Upstash console and reloading this page.</p>
+    </div>
 
     <label for="paste">Copied from x.com</label>
     <textarea id="paste" placeholder="Paste the whole 'Copy as cURL' text here"
@@ -83,6 +97,14 @@ SETUP_HTML = r"""<!DOCTYPE html>
     <p id="found"></p>
 
     <button id="save" class="primary" disabled>Save to server</button>
+  </div>
+
+  <div class="card" id="pair_card" style="display:none">
+    <label>Watch pairing code</label>
+    <div class="paircode" id="pair_code"></div>
+    <p class="hint">On your phone: Pebble app &rarr; <b>TweetFit</b> &rarr; Settings &rarr;
+      enter this server's URL and this code. Expires in <span id="pair_ttl">10:00</span>;
+      re-save here for a fresh one.</p>
   </div>
   <div id="msg"></div>
 
@@ -92,6 +114,10 @@ SETUP_HTML = r"""<!DOCTYPE html>
   var CT0_RE = /\bct0=([0-9A-Fa-f]{16,200})\b/;
   var HEX_RE = /\b[0-9A-Fa-f]{16,200}\b/g;
   var cookies = null;
+  var claimed = null;  // null until /api/config/status answers
+  var savedToken = null;
+  var pairTimer = null;
+  try { savedToken = localStorage.getItem('tweetfit_token'); } catch (e) {}
 
   function mask(v) {
     return v.slice(0, 6) + '… (' + v.length + ' chars)';
@@ -124,6 +150,20 @@ SETUP_HTML = r"""<!DOCTYPE html>
     el.textContent = text; el.className = cls || '';
   }
 
+  function show(id, on) {
+    document.getElementById(id).style.display = on ? '' : 'none';
+  }
+
+  function currentToken() {
+    var typed = document.getElementById('token').value.trim();
+    return typed || savedToken || '';
+  }
+
+  function updateSave() {
+    var needToken = claimed === true && !currentToken();
+    document.getElementById('save').disabled = !cookies || needToken;
+  }
+
   function refresh() {
     var found = document.getElementById('found');
     var text = document.getElementById('paste').value;
@@ -134,42 +174,87 @@ SETUP_HTML = r"""<!DOCTYPE html>
         ' · ct0: ' + mask(cookies.ct0);
     } else {
       found.className = text.trim() ? 'warn' : '';
-      found.textContent = text.trim() ?
-        'No cookies found yet — make sure the paste includes auth_token and ct0.' : '';
+      found.textContent = !text.trim() ? '' :
+        (/\btwimg\.com\b/.test(text) ?
+          "That request went to X's CDN (twimg.com) — copy one going to x.com instead." :
+          'No cookies found yet — make sure the paste includes auth_token and ct0.');
     }
-    document.getElementById('save').disabled = !cookies;
+    updateSave();
   }
 
+  function showPair(code, ttlSeconds) {
+    show('pair_card', true);
+    document.getElementById('pair_code').textContent =
+      code.slice(0, 4) + '-' + code.slice(4);
+    var end = Date.now() + ttlSeconds * 1000;
+    if (pairTimer) clearInterval(pairTimer);
+    pairTimer = setInterval(function () {
+      var left = Math.max(0, Math.round((end - Date.now()) / 1000));
+      var m = Math.floor(left / 60), s = left % 60;
+      document.getElementById('pair_ttl').textContent = m + ':' + (s < 10 ? '0' : '') + s;
+      if (!left) { clearInterval(pairTimer); show('pair_card', false); }
+    }, 1000);
+  }
+
+  fetch('/api/config/status').then(function (r) { return r.json(); }).then(function (s) {
+    claimed = !!s.claimed;
+    show('claim_note', !claimed);
+    show('token_row', claimed && !savedToken);
+    updateSave();
+  }).catch(function () {
+    claimed = true;  // fail closed: assume a token is needed
+    show('token_row', !savedToken);
+    updateSave();
+  });
+
   document.getElementById('paste').addEventListener('input', refresh);
+  document.getElementById('token').addEventListener('input', updateSave);
 
   document.getElementById('save').addEventListener('click', function () {
-    var token = document.getElementById('token').value.trim();
-    if (!token) { setMsg('Enter your APP_TOKEN first.', 'warn'); return; }
     if (!cookies) return;
+    var token = currentToken();
+    if (claimed === true && !token) {
+      setMsg("Enter this server's access token first.", 'warn');
+      return;
+    }
     setMsg('Saving…');
+    var headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
     fetch('/api/config', {
       method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      },
+      headers: headers,
       body: JSON.stringify(cookies)
     }).then(function (resp) {
       return resp.json().then(function (body) { return { resp: resp, body: body }; });
     }).then(function (r) {
       if (r.resp.status === 401) {
-        setMsg('Wrong access token — use the APP_TOKEN set on this server.', 'err');
+        try { localStorage.removeItem('tweetfit_token'); } catch (e) {}
+        savedToken = null;
+        show('token_row', true);
+        updateSave();
+        setMsg("Wrong access token — enter this server's token.", 'err');
       } else if (r.resp.status === 503) {
         setMsg(r.body.detail || 'No cookie storage configured on the server.', 'err');
       } else if (!r.resp.ok) {
         setMsg('Save failed: ' + (r.body.detail ?
           JSON.stringify(r.body.detail) : r.resp.status), 'err');
-      } else if (r.body.verified) {
-        setMsg('✓ Connected as @' + r.body.screen_name +
-          ' — your watch is ready.', 'ok');
       } else {
-        setMsg('Saved, but could not verify with X (' + (r.body.detail || 'unknown') +
-          '). Try the watch anyway.', 'warn');
+        var keep = r.body.app_token || token;
+        if (keep) {
+          savedToken = keep;
+          try { localStorage.setItem('tweetfit_token', keep); } catch (e) {}
+        }
+        claimed = true;
+        show('claim_note', false);
+        show('token_row', false);
+        showPair(r.body.pair_code, r.body.pair_expires_s || 600);
+        if (r.body.verified) {
+          setMsg('✓ Connected as @' + r.body.screen_name +
+            ' — now pair your watch below.', 'ok');
+        } else {
+          setMsg('Saved, but could not verify with X (' + (r.body.detail || 'unknown') +
+            '). Pair your watch and try anyway.', 'warn');
+        }
       }
     }).catch(function (e) {
       setMsg('Network error: ' + e, 'err');

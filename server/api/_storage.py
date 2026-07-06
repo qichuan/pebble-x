@@ -1,20 +1,22 @@
-"""Upstash Redis persistence for the X cookie blob.
+"""Upstash Redis persistence (cookies, app token, pairing code).
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 
 Vercel serverless has a read-only filesystem and env vars are fixed at deploy
-time, so runtime cookie updates (the /setup wizard) need external storage. The
-Upstash REST API is plain HTTPS, so httpx (already a twikit dependency) is
-enough — no Redis client library.
+time, so runtime writes (the /setup wizard) need external storage. The Upstash
+REST API is plain HTTPS, so httpx (already a twikit dependency) is enough — no
+Redis client library.
 
-The stored value is the exact X_COOKIES JSON shape, so the Redis blob and the
-env var are interchangeable. Cookie values must never be logged.
+Stored values must never be logged.
 """
 import os
 
 import httpx
 
-REDIS_KEY = "tweetfit:x_cookies"
+COOKIES_KEY = "tweetfit:x_cookies"  # exact X_COOKIES JSON shape — interchangeable
+TOKEN_KEY = "tweetfit:app_token"    # watch<->server shared secret
+PAIR_KEY = "tweetfit:pair"          # active pairing code (short TTL)
+
 _TIMEOUT = 5.0
 
 
@@ -36,32 +38,35 @@ def storage_configured() -> bool:
     return _redis_env() is not None
 
 
-def load_cookies_raw():
-    """Return the stored cookie JSON string, or None when storage is not
-    configured or nothing has been stored yet."""
-    env = _redis_env()
-    if not env:
-        return None
-    url, token = env
-    resp = httpx.get(
-        f"{url}/get/{REDIS_KEY}",
-        headers={"Authorization": "Bearer " + token},
-        timeout=_TIMEOUT,
-    )
-    resp.raise_for_status()
-    return resp.json().get("result")
-
-
-def store_cookies_raw(raw: str) -> None:
+def _request(method: str, path: str, **kwargs):
     env = _redis_env()
     if not env:
         raise RuntimeError("cookie storage is not configured")
     url, token = env
-    # Value goes in the POST body so it needs no URL-encoding.
-    resp = httpx.post(
-        f"{url}/set/{REDIS_KEY}",
+    resp = httpx.request(
+        method,
+        url + path,
         headers={"Authorization": "Bearer " + token},
-        content=raw,
         timeout=_TIMEOUT,
+        **kwargs,
     )
     resp.raise_for_status()
+    return resp.json()
+
+
+def kv_get(key: str):
+    """Return the stored string, or None when storage is not configured or the
+    key is absent/expired."""
+    if not storage_configured():
+        return None
+    return _request("GET", f"/get/{key}").get("result")
+
+
+def kv_set(key: str, value: str, ex_seconds: int | None = None) -> None:
+    # Value goes in the POST body so it needs no URL-encoding.
+    suffix = f"?EX={int(ex_seconds)}" if ex_seconds else ""
+    _request("POST", f"/set/{key}{suffix}", content=value)
+
+
+def kv_del(key: str) -> None:
+    _request("GET", f"/del/{key}")

@@ -11,7 +11,10 @@ import uvicorn
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "api"))
-os.environ["APP_TOKEN"] = "test-token"
+# MOCK_UNCLAIMED=1 starts without a token so the /setup claim flow can be
+# tested in a browser; the wizard will mint and display one.
+if os.environ.get("MOCK_UNCLAIMED") != "1":
+    os.environ["APP_TOKEN"] = "test-token"
 os.environ["X_COOKIES"] = json.dumps({"auth_token": "x", "ct0": "y"})
 
 
@@ -76,11 +79,13 @@ mock.patch("_common.Client", FakeClient).start()
 import index  # noqa: E402
 import _storage  # noqa: E402
 
-# In-memory cookie storage so the /setup wizard is fully testable in a browser.
-_cookie_store = {}
+# In-memory KV so the /setup wizard, claim, and pairing flows are fully
+# browser-testable without Upstash.
+_kv = {}
 _storage.storage_configured = lambda: True
-_storage.load_cookies_raw = lambda: _cookie_store.get("v")
-_storage.store_cookies_raw = lambda raw: _cookie_store.update(v=raw)
+_storage.kv_get = _kv.get
+_storage.kv_set = lambda key, value, ex_seconds=None: _kv.update({key: value})
+_storage.kv_del = lambda key: _kv.pop(key, None)
 
 
 def fake_render_media_for_watch(media_url, width, height, color, heap=0):

@@ -60,12 +60,12 @@ contains all photo URLs. Errors: `401` (bad/missing token), `422` (bad body),
 
 ### 1. Stand up the server
 
-Follow [`server/README.md`](server/README.md): one-click deploy to Vercel (pick
-an `APP_TOKEN`), connect the free Upstash Redis storage, then open
+Follow [`server/README.md`](server/README.md): one-click deploy to Vercel
+(nothing to configure), connect the free Upstash Redis storage, then open
 `https://<your-app>.vercel.app/setup` in a desktop browser and paste a
-"Copy as cURL" from x.com DevTools — the wizard extracts your session cookies
-and stores them on your server. No Python, no terminal. You'll end up with a
-URL like `https://tweetfit-xyz.vercel.app`.
+"Copy as cURL" from x.com DevTools — the wizard extracts your session cookies,
+generates the access secret itself, and shows a short **pairing code** to enter
+in the watch settings. No Python, no terminal, no env vars.
 
 ### 2. Enable GitHub Pages (settings page)
 
@@ -83,8 +83,9 @@ pebble install --phone <phone-ip>     # or --emulator basalt
 
 ### 4. Configure
 
-Open the Pebble phone app → TweetFit → Settings. Enter your **server URL** and the
-**access token** (`APP_TOKEN`), then Save. The watch loads your timeline.
+Open the Pebble phone app → TweetFit → Settings. Enter your **server URL** and
+the **pairing code** from the setup wizard (or paste an access token manually),
+then Save. The watch loads your timeline.
 
 ## Watch controls
 

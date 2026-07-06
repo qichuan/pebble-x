@@ -91,11 +91,18 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   ever handled — the user pastes a "Copy as cURL" blob from a logged-in x.com
   DevTools tab into the server's `/setup` wizard, which extracts `auth_token` +
   `ct0` (`POST /api/config`) and stores them in Upstash Redis (key
-  `tweetfit:x_cookies`, helpers in `server/api/_storage.py`). Cookie
-  read-through is `_common.load_cookies()`: Redis first, `X_COOKIES` env var as
-  fallback — never cache cookies across invocations. `server/login.py` is the
-  legacy manual path (formats the env var). The watch↔server shared secret is
-  `APP_TOKEN` (deploy-time env var).
+  `tweetfit:x_cookies`, generic KV helpers in `server/api/_storage.py`). The
+  cookies ride only on requests to `x.com`/`api.x.com`, never `twimg.com` CDN
+  assets. Cookie read-through is `_common.load_cookies()`: Redis first,
+  `X_COOKIES` env var as fallback — never cache cookies across invocations.
+- **Access token**: minted by the server on the wizard's first save
+  ("claiming"; `secrets.token_urlsafe`, key `tweetfit:app_token`) and handed to
+  the watch via a one-time 10-minute pairing code (`tweetfit:pair`,
+  `POST /api/pair`, exchanged by the settings page over CORS). `expected_token()`
+  in `index.py` reads Redis first, `APP_TOKEN` env as legacy fallback.
+  `GET /api/config/status` is deliberately unauthenticated but boolean-only.
+  An unclaimed server is claimable by the first visitor — reset by deleting
+  `tweetfit:app_token` in Upstash. `server/login.py` is the legacy manual path.
 - **Cost discipline**: the watch never auto-polls. It shows cached tweets on
   launch and only hits the network on explicit refresh (long-press SELECT) or an
   empty cache. Preserve this.

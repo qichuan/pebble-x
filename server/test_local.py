@@ -160,43 +160,86 @@ with mock.patch("_common.Client", FakeClient):
         assert render_mock.call_args.args[0] == "https://pbs.twimg.com/media/fake-77-1.jpg"
         print("PASS  media fallback -> resolves indexed URL from tweet id")
 
-    # ---- Setup wizard & cookie config ----
+    # ---- Setup wizard, claim, cookie config & pairing ----
+    import _storage
+
     r = client.get("/setup")
     assert r.status_code == 200 and "auth_token" in r.text and "Copy as cURL" in r.text
     print("PASS  setup page -> served without auth")
 
     good_cookies = {"auth_token": "a" * 40, "ct0": "b" * 160}
 
-    r = client.post("/api/config", json=good_cookies)
-    assert r.status_code == 401, r.status_code
-    print("PASS  config no-token -> 401")
-
-    r = client.post("/api/config", json={"auth_token": "not hex!", "ct0": "b" * 160}, headers=AUTH)
-    assert r.status_code == 422, r.status_code
-    print("PASS  config non-hex values -> 422")
-
     r = client.post("/api/config", json=good_cookies, headers=AUTH)
     assert r.status_code == 503 and "Upstash" in r.json()["detail"], r.json()
     print("PASS  config without storage -> 503 with Upstash hint")
 
-    fake_store = {}
+    r = client.get("/api/config/status")
+    assert r.json() == {"claimed": True, "storage": False, "cookies": True, "source": "env"}, r.json()
+    print("PASS  status (no auth) -> claimed via env, env cookies")
+
+    kv = {}
     with mock.patch("_storage.storage_configured", return_value=True), mock.patch(
-        "_storage.store_cookies_raw", side_effect=lambda raw: fake_store.update(v=raw)
-    ), mock.patch("_storage.load_cookies_raw", side_effect=lambda: fake_store.get("v")):
+        "_storage.kv_get", side_effect=kv.get
+    ), mock.patch(
+        "_storage.kv_set", side_effect=lambda k, v, ex_seconds=None: kv.update({k: v})
+    ), mock.patch("_storage.kv_del", side_effect=lambda k: kv.pop(k, None)):
+        # Claimed (via env APP_TOKEN): config requires Bearer
+        r = client.post("/api/config", json=good_cookies)
+        assert r.status_code == 401, r.status_code
+        r = client.post("/api/config", json=good_cookies, headers={"Authorization": "Bearer no"})
+        assert r.status_code == 401
+        print("PASS  config on claimed server -> 401 without valid token")
+
+        r = client.post(
+            "/api/config", json={"auth_token": "not hex!", "ct0": "b" * 160}, headers=AUTH
+        )
+        assert r.status_code == 422, r.status_code
+        print("PASS  config non-hex values -> 422")
+
         r = client.post("/api/config", json=good_cookies, headers=AUTH)
         b = r.json()
         assert r.status_code == 200 and b["ok"] and b["verified"], b
-        assert b["screen_name"] == "janedev"
-        assert json.loads(fake_store["v"]) == good_cookies
-        print("PASS  config -> stored raw X_COOKIES shape, verified as @janedev")
+        assert b["screen_name"] == "janedev" and b["claimed"] is False and "app_token" not in b
+        assert json.loads(kv[_storage.COOKIES_KEY]) == good_cookies
+        code = b["pair_code"]
+        assert len(code) == 8 and kv[_storage.PAIR_KEY] == code
+        print("PASS  config -> stored cookies, verified @janedev, pairing code minted")
 
-        r = client.get("/api/config/status", headers=AUTH)
-        assert r.json() == {"configured": True, "source": "redis"}, r.json()
-        print("PASS  config status -> redis source")
+        r = client.get("/api/config/status")
+        assert r.json() == {"claimed": True, "storage": True, "cookies": True, "source": "redis"}
+        print("PASS  status -> redis cookie source")
 
-    r = client.get("/api/config/status", headers=AUTH)
-    assert r.json() == {"configured": True, "source": "env"}, r.json()
-    print("PASS  config status -> env fallback source")
+        r = client.post("/api/pair", json={"code": "NOPE-NOPE"})
+        assert r.status_code == 404
+        r = client.post("/api/pair", json={"code": code[:4].lower() + "-" + code[4:]})
+        assert r.status_code == 200 and r.json()["app_token"] == "test-token", r.json()
+        r = client.post("/api/pair", json={"code": code})
+        assert r.status_code == 404  # single-use
+        print("PASS  pair -> normalizes code, returns token once, then 404")
+
+        # Unclaimed server (no Redis token, no env): first save claims it
+        kv.clear()
+        with mock.patch.dict(os.environ):
+            del os.environ["APP_TOKEN"]
+            r = client.get("/api/timeline?feed=following", headers=AUTH)
+            assert r.status_code == 401  # nothing to authenticate against
+            r = client.post("/api/config", json=good_cookies)  # no auth header
+            b = r.json()
+            assert r.status_code == 200 and b["claimed"] is True and b["verified"], b
+            minted = b["app_token"]
+            assert minted and kv[_storage.TOKEN_KEY] == minted
+            print("PASS  unclaimed server -> first save claims, mints token")
+
+            r = client.post("/api/config", json=good_cookies)
+            assert r.status_code == 401
+            print("PASS  claimed server -> unauthenticated re-save rejected")
+
+            minted_auth = {"Authorization": "Bearer " + minted}
+            r = client.get("/api/timeline?feed=following", headers=minted_auth)
+            assert r.status_code == 200
+            r = client.post("/api/pair", json={"code": b["pair_code"]})
+            assert r.json()["app_token"] == minted
+            print("PASS  minted token -> works for data endpoints and pairing")
 
     with mock.patch.dict(os.environ):
         del os.environ["X_COOKIES"]
@@ -204,9 +247,9 @@ with mock.patch("_common.Client", FakeClient):
         assert r.status_code == 502 and "/setup" in r.json()["detail"], r.json()
         print("PASS  timeline unconfigured -> 502 pointing at /setup")
 
-        r = client.get("/api/config/status", headers=AUTH)
-        assert r.json() == {"configured": False, "source": None}, r.json()
-        print("PASS  config status unconfigured -> false")
+        r = client.get("/api/config/status")
+        assert r.json() == {"claimed": True, "storage": False, "cookies": False, "source": None}
+        print("PASS  status without cookies -> cookies false")
 
 # Regression for the 2026-07 X payload change: real twikit (no network) must
 # parse a user whose legacy.entities.description has no 'urls' key, and one

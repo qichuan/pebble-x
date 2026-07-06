@@ -47,11 +47,17 @@
            inputmode="url">
     <p class="hint">The address of your TweetFit scraper server (see the <b>server/</b> folder).</p>
 
-    <label for="token">Access token</label>
-    <input id="token" placeholder="paste APP_TOKEN"
+    <label for="pair_code">Pairing code</label>
+    <input id="pair_code" placeholder="e.g. KX7Q-M2FP"
+           autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
+    <p class="hint">Shown by your server's <b>/setup</b> page after you connect your
+      X account. Fetches the access token for you.</p>
+
+    <label for="token">Access token (manual)</label>
+    <input id="token" placeholder="or paste the token directly"
            autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <p class="hint">The <b>APP_TOKEN</b> you set when deploying the server. Leave blank to keep
-      the current token.</p>
+    <p class="hint">Only needed if you're not using a pairing code. Leave both blank to
+      keep the current token.</p>
 
     <button id="save" class="primary">Save</button>
   </div>
@@ -74,15 +80,47 @@
     document.getElementById('token').placeholder = '•••••• (unchanged)';
   }
 
+  function finish(serverUrl, token) {
+    var payload = { action: 'save', serverUrl: serverUrl };
+    if (token) payload.token = token;
+    location.href = returnTo + encodeURIComponent(JSON.stringify(payload));
+  }
+
+  // Exchange the one-time pairing code (shown by the server's /setup page)
+  // for the real access token. XMLHttpRequest for old Pebble app webviews.
+  function exchangeCode(serverUrl, code, onToken) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', serverUrl.replace(/\/+$/, '') + '/api/pair');
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.timeout = 10000;
+    xhr.onload = function () {
+      var body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status === 200 && body && body.app_token) {
+        onToken(body.app_token);
+      } else {
+        setMsg('Invalid or expired pairing code — re-open /setup on your server ' +
+          'for a fresh one.', 'warn');
+      }
+    };
+    xhr.onerror = xhr.ontimeout = function () {
+      setMsg('Could not reach the server — check the URL.', 'warn');
+    };
+    xhr.send(JSON.stringify({ code: code }));
+  }
+
   document.getElementById('save').addEventListener('click', function () {
     var serverUrl = document.getElementById('server_url').value.trim();
+    var code = document.getElementById('pair_code').value.trim();
     var token = document.getElementById('token').value.trim();
     if (!serverUrl) { setMsg('Enter your server URL.', 'warn'); return; }
     if (!/^https?:\/\//.test(serverUrl)) { setMsg('URL must start with https://', 'warn'); return; }
     setMsg('Saving…');
-    var payload = { action: 'save', serverUrl: serverUrl };
-    if (token) payload.token = token;
-    location.href = returnTo + encodeURIComponent(JSON.stringify(payload));
+    if (code) {
+      exchangeCode(serverUrl, code, function (fetched) { finish(serverUrl, fetched); });
+    } else {
+      finish(serverUrl, token);
+    }
   });
 })();
 </script>

@@ -29,7 +29,7 @@ def load_cookies() -> tuple[dict, str]:
     configured but unreachable, the error propagates (falling back to a
     possibly-stale env var would mask it).
     """
-    raw = _storage.load_cookies_raw()
+    raw = _storage.kv_get(_storage.COOKIES_KEY)
     if raw:
         return json.loads(raw), "redis"
     raw = os.environ.get("X_COOKIES")

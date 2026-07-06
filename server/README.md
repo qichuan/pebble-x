@@ -8,47 +8,50 @@ API key, no fees). The Pebble app reaches it over the internet as a plain REST A
 server/
   api/index.py      FastAPI app — all routes:
                       GET  /api/health                            → { ok: true }   (no auth)
-                      GET  /setup                                  → cookie setup wizard (HTML, no auth)
+                      GET  /setup                                  → setup wizard (HTML, no auth)
                       GET  /api/timeline?feed=following|foryou     → { feed, tweets: [...] }
                       POST /api/like  {tweet_id}                   → { ok: true }
                       POST /api/retweet {tweet_id}                 → { ok: true }
                       POST /api/media {media_url?,tweet_id?,image_index?,width,height,color,heap} → watch PNG
-                      POST /api/config {auth_token, ct0}           → { ok, verified, screen_name }
-                      GET  /api/config/status                      → { configured, source }
+                      POST /api/config {auth_token, ct0}           → { ok, verified, screen_name, pair_code, … }
+                                                                     (claims an unclaimed server; Bearer after)
+                      POST /api/pair {code}                        → { app_token }  (one-time, no auth)
+                      GET  /api/config/status                      → { claimed, storage, cookies, source } (no auth)
   api/_common.py    twikit client, cookie read-through, tweet mapping, photo rendering
-  api/_storage.py   Upstash Redis persistence for the cookie blob
+  api/_storage.py   Upstash Redis persistence (cookies, access token, pairing code)
   api/_setup_page.py  HTML for the /setup wizard
   vercel.json       rewrites all requests to the ASGI app
   login.py          legacy manual setup (not deployed) — prefer /setup
   requirements.txt  twikit, fastapi, uvicorn, pillow, httpx
 ```
 
-Everything except `/api/health` and `/setup` requires
-`Authorization: Bearer <APP_TOKEN>`.
+The data endpoints (`/api/timeline`, `/api/like`, `/api/retweet`, `/api/media`)
+require `Authorization: Bearer <token>`. The token is minted by the server the
+first time the `/setup` wizard saves ("claiming" the server) and stored in
+Upstash Redis; the `APP_TOKEN` env var still works as a legacy fallback.
 
 Run locally: `uvicorn api.index:app --port 9099` (or `python mock_server.py 9099`
 for a version backed by a fake twikit client, no X account needed).
 
 ## Setup
 
-No Python, no terminal — just a browser.
+No Python, no terminal, no env vars — just a browser.
 
-### 1. Deploy to Vercel
+### 1. Deploy to Vercel (one click)
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fqichuan%2Fpebble-x&root-directory=server&project-name=tweetfit&env=APP_TOKEN&envDescription=Shared%20secret%20between%20your%20watch%20and%20this%20server%20%E2%80%94%20invent%20a%20long%20random%20string)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fqichuan%2Fpebble-x&root-directory=server&project-name=tweetfit)
 
-When prompted, set **`APP_TOKEN`** to a long random string you invent — it's the
-shared secret between your watch and your server. (If the import screen doesn't
-pick up the root directory automatically, set **Root Directory** to `server`.)
+Nothing to configure. (If the import screen doesn't pick up the root directory
+automatically, set **Root Directory** to `server`.)
 
-CLI alternative: `cd server && vercel`, add the `APP_TOKEN` env var in the
-dashboard, then `vercel --prod`.
+CLI alternative: `cd server && vercel --prod`.
 
 ### 2. Connect cookie storage (one-time)
 
 In the Vercel dashboard → your project → **Storage** → **Create / Connect
-Database** → **Upstash Redis** (free tier is plenty — the server stores one tiny
-value). Then **redeploy once** so the injected credentials reach the function.
+Database** → **Upstash Redis** (free tier is plenty — the server stores three
+tiny values). Then **redeploy once** so the injected credentials reach the
+function.
 
 ### 3. Connect your X account — the /setup wizard
 
@@ -56,11 +59,19 @@ Open `https://<your-app>.vercel.app/setup` in a **desktop** browser and follow
 the steps on the page:
 
 1. Log in at **x.com**.
-2. DevTools (F12) → **Network** tab → reload → right-click any request →
-   **Copy → Copy as cURL**.
-3. Paste the whole thing into the wizard with your `APP_TOKEN` and hit save —
-   it extracts the two session cookies (`auth_token` + `ct0`), sends them to
-   *your* server only, and confirms with your @handle.
+2. DevTools (F12) → **Network** tab → reload → type `home` in the filter box →
+   right-click the `home` request (domain **x.com**) → **Copy → Copy as cURL**.
+   Any request to `x.com`/`api.x.com` works; requests to `twimg.com`
+   (images/CDN) don't carry the cookies.
+3. Paste the whole thing into the wizard and hit save — it extracts the two
+   session cookies (`auth_token` + `ct0`), sends them to *your* server only,
+   and confirms with your @handle.
+
+The **first save claims the server**: it generates the access token itself
+(stored in Redis, remembered by that browser) and shows a short one-time
+**pairing code** (valid 10 minutes) for the watch. Do this right after
+deploying — an unclaimed server can be claimed by anyone who finds the URL.
+To reset, delete the `tweetfit:app_token` key in the Upstash console.
 
 X blocks automated username/password login behind Cloudflare, so the wizard
 reuses the session of a browser where you're already logged in. Treat those
@@ -69,15 +80,18 @@ cookies like a password — they grant access to your X account.
 When the session expires or X invalidates it, just re-open `/setup` and paste
 fresh cookies — **no redeploy needed**.
 
-### 4. Point the watch at it
+### 4. Pair the watch
 
-In the Pebble app → TweetFit → Settings, enter the production URL and the `APP_TOKEN`.
+Pebble app → TweetFit → Settings: enter the server URL and the **pairing code**
+from the wizard — the page fetches the access token for you. (A token can also
+be pasted manually as a fallback.)
 
 ### Manual fallback (no Upstash)
 
 The pre-wizard flow still works: run `python login.py` locally to format the
-two cookies, then set `X_COOKIES` (and `APP_TOKEN`) as Vercel env vars and
-redeploy. The server reads Upstash first and falls back to `X_COOKIES`.
+two cookies and mint a token, then set `X_COOKIES` and `APP_TOKEN` as Vercel
+env vars and redeploy. The server reads Upstash first and falls back to the
+env vars.
 
 ## Test
 
