@@ -7,6 +7,8 @@ import os
 
 from twikit import Client
 
+import _twikit_patch  # noqa: F401  applies the ondemand.s login fix on import
+
 
 def make_client() -> Client:
     """Build a twikit client from the cookie blob stored in the env.

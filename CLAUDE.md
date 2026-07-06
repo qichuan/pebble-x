@@ -72,9 +72,10 @@ maps index → id for likes.
 - **twikit is fragile**: it uses X's private GraphQL API and breaks every few
   weeks. Server catches upstream errors and returns `502` with `detail`. Fix =
   `pip install -U twikit`, sometimes a fresh `python login.py`.
-- **X session**: minted locally by `server/login.py` (never deployed), pasted
-  into the Vercel env var `X_COOKIES`. The X password is never stored. The
-  watch↔server shared secret is `APP_TOKEN` (also a Vercel env var).
+- **X session**: X blocks automated login behind Cloudflare, so `server/login.py`
+  (never deployed) does NOT log in — it formats the `auth_token` + `ct0` cookies
+  you copy from a logged-in x.com browser tab into the `X_COOKIES` env var. No
+  password is ever handled. The watch↔server shared secret is `APP_TOKEN`.
 - **Cost discipline**: the watch never auto-polls. It shows cached tweets on
   launch and only hits the network on explicit refresh (long-press SELECT) or an
   empty cache. Preserve this.

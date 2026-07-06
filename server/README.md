@@ -23,9 +23,18 @@ for a version backed by a fake twikit client, no X account needed).
 
 ## Setup
 
-### 1. Mint your X session cookie (run locally)
+### 1. Grab your X session cookies (run locally)
 
-Do this on your own machine — X trusts your home IP far more than a datacenter one.
+X blocks automated username/password login behind Cloudflare, so instead we reuse
+the session from a browser where you're already logged in to x.com.
+
+First, copy two cookies from a logged-in x.com browser tab:
+
+1. Open **x.com**, then DevTools (F12 / Cmd-Opt-I).
+2. **Application** (Chrome) or **Storage** (Firefox) → **Cookies** → `https://x.com`.
+3. Copy the *Value* of `auth_token` (long hex string) and `ct0` (CSRF token).
+
+Then run the helper, which formats them and mints a shared secret:
 
 ```sh
 cd server
@@ -34,12 +43,13 @@ pip install -r requirements.txt
 python login.py
 ```
 
-Enter your X username / email / password. The script logs in and prints two values:
+It prints two values:
 
-- `X_COOKIES=...`  — the session cookie blob
+- `X_COOKIES=...`  — the session cookie blob (`auth_token` + `ct0`)
 - `APP_TOKEN=...`  — a freshly generated shared secret
 
-Your password is used only for that one login and is never stored.
+Treat `auth_token` like a password — it grants access to your X account. Nothing is
+stored on disk; the values only appear in the terminal for you to copy into Vercel.
 
 ### 2. Deploy to Vercel
 
@@ -89,4 +99,9 @@ app with a mocked twikit client.
 - **twikit breaks periodically** when X rotates its internal API. Fix with
   `pip install -U twikit` and redeploy; occasionally a new login (`python login.py`)
   is needed to refresh cookies.
+- **Login patch**: X's 2026-03-18 webpack change broke twikit 2.3.3 login
+  (`Couldn't get KEY_BYTE indices`). `api/_twikit_patch.py` fixes it at import time
+  (imported by `_common.py` and `login.py`), so we stay on the official PyPI package.
+  If login hits that error again, X changed the format once more — update the regexes
+  in that file (see d60/twikit issues #408 / PRs #410, #411).
 - Keep `X_COOKIES` and `APP_TOKEN` secret — anyone with them can act as your X account.
