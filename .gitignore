@@ -1,0 +1,17 @@
+# Pebble build output
+watch/build/
+watch/.lock-waf_darwin_build
+*.pbw
+
+# Python
+server/.venv/
+__pycache__/
+*.pyc
+cookies.json
+
+# Secrets — never commit these
+.env
+*.local
+
+# OS
+.DS_Store

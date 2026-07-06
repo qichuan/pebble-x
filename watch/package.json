@@ -10,6 +10,7 @@
     "uuid": "46056075-4bc7-4d0c-8c90-51e4bba892fd",
     "sdkVersion": "3",
     "enableMultiJS": true,
+    "capabilities": ["configurable"],
     "targetPlatforms": [
       "aplite",
       "basalt",
@@ -24,6 +25,7 @@
     },
     "messageKeys": [
       "CMD",
+      "FEED",
       "LIKE_INDEX",
       "TWEET_INDEX",
       "TWEET_COUNT",

@@ -9,11 +9,15 @@
 #define CMD_FETCH 0
 #define CMD_REFRESH 1
 
+// Feeds
+#define FEED_FOLLOWING 0
+#define FEED_FORYOU 1
+
 // Status codes (phone -> watch)
 #define STATUS_OK 0
-#define STATUS_NOT_LOGGED_IN 1
+#define STATUS_NOT_CONFIGURED 1
 #define STATUS_NETWORK_ERROR 2
-#define STATUS_API_ERROR 3
+#define STATUS_SERVER_ERROR 3
 #define STATUS_FETCHING 4
 
 typedef struct {
@@ -27,6 +31,9 @@ static Tweet s_tweets[MAX_TWEETS];
 static int s_tweet_count = 0;
 static bool s_got_reply = false;
 static int s_fetch_retries = 0;
+static int s_feed = FEED_FOLLOWING;
+
+#define PERSIST_FEED 1
 
 static Window *s_timeline_window;
 static MenuLayer *s_menu_layer;
@@ -153,18 +160,52 @@ static void prv_show_detail(int index) {
 }
 
 // ---- Timeline window ----
+// Row 0 is a feed toggle; tweets occupy rows 1..count. A section header shows
+// the current feed name.
+
+static const char *prv_feed_name(int feed) {
+  return feed == FEED_FORYOU ? "For You" : "Following";
+}
+
+static int prv_row_to_tweet(int row) {
+  return row - 1;  // row 0 is the toggle
+}
 
 static uint16_t prv_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *context) {
-  return s_tweet_count;
+  return s_tweet_count + 1;
+}
+
+static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  return MENU_CELL_BASIC_HEADER_HEIGHT;
+}
+
+static void prv_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index,
+                            void *context) {
+  char title[24];
+  snprintf(title, sizeof(title), "%s timeline", prv_feed_name(s_feed));
+  menu_cell_basic_header_draw(ctx, cell_layer, title);
 }
 
 static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  return 56;
+  return cell_index->row == 0 ? 34 : 56;
 }
 
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
-  Tweet *t = &s_tweets[cell_index->row];
   GRect bounds = layer_get_bounds(cell_layer);
+  bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
+  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
+
+  if (cell_index->row == 0) {
+    char toggle[28];
+    snprintf(toggle, sizeof(toggle), "Switch to %s",
+             prv_feed_name(s_feed == FEED_FORYOU ? FEED_FOLLOWING : FEED_FORYOU));
+    graphics_draw_text(ctx, toggle, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(6, 2, bounds.size.w - 12, 28), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentCenter, NULL);
+    return;
+  }
+
+  Tweet *t = &s_tweets[prv_row_to_tweet(cell_index->row)];
 
   char author_line[AUTHOR_LEN + TIME_LEN + 10];
   snprintf(author_line, sizeof(author_line), "@%s · %s%s",
@@ -178,8 +219,6 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   snippet[j] = '\0';
   prv_fix_utf8_tail(snippet);
 
-  graphics_context_set_text_color(ctx, menu_cell_layer_is_highlighted(cell_layer)
-                                            ? GColorWhite : GColorBlack);
   graphics_draw_text(ctx, author_line, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                      GRect(6, 0, bounds.size.w - 12, 16), GTextOverflowModeTrailingEllipsis,
                      GTextAlignmentLeft, NULL);
@@ -188,8 +227,23 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
                      GTextAlignmentLeft, NULL);
 }
 
+static void prv_toggle_feed(void) {
+  s_feed = (s_feed == FEED_FORYOU) ? FEED_FOLLOWING : FEED_FORYOU;
+  persist_write_int(PERSIST_FEED, s_feed);
+  s_tweet_count = 0;
+  menu_layer_reload_data(s_menu_layer);
+  menu_layer_set_selected_index(s_menu_layer, (MenuIndex) { .section = 0, .row = 0 },
+                                MenuRowAlignTop, false);
+  prv_set_status("Loading...");
+  prv_send_cmd(CMD_FETCH);  // pkjs sends cached feed instantly if present
+}
+
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  prv_show_detail(cell_index->row);
+  if (cell_index->row == 0) {
+    prv_toggle_feed();
+  } else {
+    prv_show_detail(prv_row_to_tweet(cell_index->row));
+  }
 }
 
 static void prv_select_long_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
@@ -204,6 +258,8 @@ static void prv_timeline_window_load(Window *window) {
   s_menu_layer = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_menu_layer, NULL, (MenuLayerCallbacks) {
     .get_num_rows = prv_get_num_rows,
+    .get_header_height = prv_get_header_height,
+    .draw_header = prv_draw_header,
     .get_cell_height = prv_get_cell_height,
     .draw_row = prv_draw_row,
     .select_click = prv_select_click,
@@ -233,6 +289,7 @@ static void prv_send_cmd(int cmd) {
   DictionaryIterator *iter;
   if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
     dict_write_int32(iter, MESSAGE_KEY_CMD, cmd);
+    dict_write_int32(iter, MESSAGE_KEY_FEED, s_feed);
     app_message_outbox_send();
   }
 }
@@ -250,14 +307,14 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
 
   if ((t = dict_find(iter, MESSAGE_KEY_STATUS))) {
     switch (t->value->int32) {
-      case STATUS_NOT_LOGGED_IN:
-        prv_set_status("Not logged in.\nOpen the app settings on your phone.");
+      case STATUS_NOT_CONFIGURED:
+        prv_set_status("Not set up.\nOpen the app settings on your phone.");
         break;
       case STATUS_NETWORK_ERROR:
         prv_set_status("Network error.\nHold SELECT to retry.");
         break;
-      case STATUS_API_ERROR:
-        prv_set_status("X API error.\nHold SELECT to retry.");
+      case STATUS_SERVER_ERROR:
+        prv_set_status("Server error.\nHold SELECT to retry.");
         break;
       case STATUS_FETCHING:
         prv_set_status("Refreshing...");
@@ -319,6 +376,8 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
 // ---- App lifecycle ----
 
 static void prv_init(void) {
+  s_feed = persist_exists(PERSIST_FEED) ? persist_read_int(PERSIST_FEED) : FEED_FOLLOWING;
+
   s_timeline_window = window_create();
   window_set_window_handlers(s_timeline_window, (WindowHandlers) {
     .load = prv_timeline_window_load,
