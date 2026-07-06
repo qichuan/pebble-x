@@ -10,7 +10,7 @@ server over authenticated HTTPS. Login is a one-time local script, not an app.
 
 ```
 watch/            Pebble app (C watchapp + PebbleKit JS)
-server/           Vercel Python service that scrapes X via twikit
+server/           FastAPI service (on Vercel) that scrapes X via twikit
 docs/index.html   Settings page (GitHub Pages) — enter server URL + token
 ```
 
@@ -31,6 +31,21 @@ Watch (C)  ──AppMessage──▶  Pebble phone app (pkjs)  ──HTTPS+Beare
 - **Settings page** (`docs/`): where you enter the server URL and access token.
 
 Tweets are text-only for now; a tweet with photos shows a `[photo]` marker.
+
+## REST API
+
+The server is a FastAPI app (`server/api/index.py`). The watch reaches it over the
+internet; `/api/timeline` and `/api/like` require `Authorization: Bearer <APP_TOKEN>`.
+
+| Method | Path                                  | Body            | Response               |
+|--------|---------------------------------------|-----------------|------------------------|
+| GET    | `/api/health`                         | —               | `{ ok: true }`         |
+| GET    | `/api/timeline?feed=following\|foryou` | —               | `{ feed, tweets: [] }` |
+| POST   | `/api/like`                           | `{ tweet_id }`  | `{ ok: true }`         |
+
+Each `tweets[]` item: `{ id, name, handle, text, created_at, favorited, has_media }`
+(max 15 per response). Errors: `401` (bad/missing token), `422` (bad body),
+`502` (twikit/upstream failure, with `detail`).
 
 ## Setup
 

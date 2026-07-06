@@ -1,4 +1,4 @@
-"""Shared helpers for the Peep scraper endpoints.
+"""Shared helpers for the Peep scraper API.
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 """
@@ -6,15 +6,6 @@ import json
 import os
 
 from twikit import Client
-
-
-def authorized(headers) -> bool:
-    """True if the request carries the correct bearer token."""
-    expected = os.environ.get("APP_TOKEN")
-    if not expected:
-        return False
-    auth = headers.get("Authorization", "")
-    return auth == "Bearer " + expected
 
 
 def make_client() -> Client:
@@ -43,12 +34,3 @@ def tweet_to_dict(t) -> dict:
         "favorited": bool(getattr(t, "favorited", False)),
         "has_media": len(media) > 0,
     }
-
-
-def send_json(handler, status: int, obj: dict) -> None:
-    body = json.dumps(obj).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)

@@ -1,8 +1,8 @@
 {
   "name": "Peep",
-  "author": "MakeAwesomeHappen",
+  "author": "Zhang Qichuan",
   "version": "1.0.0",
-  "keywords": ["pebble-app"],
+  "keywords": ["pebble-app", "twitter", "pebble", "x"],
   "private": true,
   "dependencies": {},
   "pebble": {

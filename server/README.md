@@ -1,19 +1,25 @@
 # Peep scraper server
 
-A tiny Vercel Python service that fetches your X timeline and likes tweets using
-[twikit](https://github.com/d60/twikit) (X's internal API — no API key, no fees).
-The Pebble app talks only to this server.
+A small **FastAPI** service (deployed on Vercel) that fetches your X timeline and
+likes tweets using [twikit](https://github.com/d60/twikit) (X's internal API — no
+API key, no fees). The Pebble app reaches it over the internet as a plain REST API.
 
 ```
 server/
-  api/timeline.py   GET  /api/timeline?feed=following|foryou   → { tweets: [...] }
-  api/like.py       POST /api/like  {tweet_id}                  → { ok: true }
-  api/_common.py    shared auth + twikit client + JSON helpers
+  api/index.py      FastAPI app — all routes:
+                      GET  /api/health                            → { ok: true }   (no auth)
+                      GET  /api/timeline?feed=following|foryou     → { feed, tweets: [...] }
+                      POST /api/like  {tweet_id}                   → { ok: true }
+  api/_common.py    twikit client + tweet mapping
+  vercel.json       rewrites all requests to the ASGI app
   login.py          run locally once to mint the X session cookie (not deployed)
-  requirements.txt  twikit
+  requirements.txt  twikit, fastapi, uvicorn
 ```
 
-Both endpoints require `Authorization: Bearer <APP_TOKEN>`.
+The `/api/timeline` and `/api/like` endpoints require `Authorization: Bearer <APP_TOKEN>`.
+
+Run locally: `uvicorn api.index:app --port 9099` (or `python mock_server.py 9099`
+for a version backed by a fake twikit client, no X account needed).
 
 ## Setup
 
@@ -65,16 +71,21 @@ In the Pebble app → Peep → Settings, enter the production URL and the `APP_T
 
 ```sh
 TOKEN=... URL=https://peep-xyz.vercel.app
+curl "$URL/api/health"
 curl -H "Authorization: Bearer $TOKEN" "$URL/api/timeline?feed=following"
-curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"tweet_id":"123"}' "$URL/api/like"
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" -d '{"tweet_id":"123"}' "$URL/api/like"
 ```
+
+For a credential-free run of the endpoints, `python test_local.py` exercises the
+app with a mocked twikit client.
 
 ## Caveats
 
 - **Datacenter IPs**: X sometimes challenges/blocks requests from cloud IPs. If the
-  timeline endpoint returns `502`, that's the likely cause. The code is host-agnostic —
-  the same `api/` functions run on Fly.io, a small VPS, or behind a Cloudflare tunnel
-  from your home network if Vercel gets blocked.
+  timeline endpoint returns `502`, that's the likely cause. The app is host-agnostic —
+  the same `uvicorn api.index:app` runs on Fly.io, a small VPS, or behind a Cloudflare
+  tunnel from your home network if Vercel gets blocked.
 - **twikit breaks periodically** when X rotates its internal API. Fix with
   `pip install -U twikit` and redeploy; occasionally a new login (`python login.py`)
   is needed to refresh cookies.
