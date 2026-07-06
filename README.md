@@ -24,13 +24,16 @@ Watch (C)  ──AppMessage──▶  Pebble phone app (pkjs)  ──HTTPS+Beare
 
 - **Watch**: a timeline list with a **feed toggle** at the top (Following ⇄ For
   You) and a section header showing the current feed. SELECT opens a tweet;
-  SELECT again likes it. Long-press SELECT refreshes.
+  SELECT again likes it. On color watches, DOWN at the end of a tweet detail
+  opens the photo. Long-press SELECT refreshes.
 - **pkjs** (inside the Pebble phone app): calls your server, caches each feed so
   reopening the app is instant/free, and bridges to the watch over AppMessage.
-- **Server** (`server/`): fetches the timeline and posts likes with twikit.
+- **Server** (`server/`): fetches the timeline, posts likes, and renders photos
+  into watch-sized Pebble-compatible PNGs.
 - **Settings page** (`docs/`): where you enter the server URL and access token.
 
-Tweets are text-only for now; a tweet with photos shows a `[photo]` marker.
+Tweets with photos show a `[photo]` marker. Opening the photo loads it on demand
+on color watches so timeline browsing stays fast and cheap.
 
 ## REST API
 
@@ -40,10 +43,11 @@ internet; `/api/timeline` and `/api/like` require `Authorization: Bearer <APP_TO
 | Method | Path                                  | Body            | Response               |
 |--------|---------------------------------------|-----------------|------------------------|
 | GET    | `/api/health`                         | —               | `{ ok: true }`         |
-| GET    | `/api/timeline?feed=following\|foryou` | —               | `{ feed, tweets: [] }` |
-| POST   | `/api/like`                           | `{ tweet_id }`  | `{ ok: true }`         |
+| GET    | `/api/timeline?feed=following\|foryou` | —                 | `{ feed, tweets: [] }` |
+| POST   | `/api/like`                           | `{ tweet_id }`    | `{ ok: true }`         |
+| POST   | `/api/media`                          | `{ media_url, width, height, color }` | `{ width, height, byte_count, image_base64 }` |
 
-Each `tweets[]` item: `{ id, name, handle, text, created_at, favorited, has_media }`
+Each `tweets[]` item: `{ id, name, handle, text, created_at, favorited, has_media, media_url }`
 (max 15 per response). Errors: `401` (bad/missing token), `422` (bad body),
 `502` (twikit/upstream failure, with `detail`).
 
@@ -84,11 +88,17 @@ Open the Pebble phone app → Peep → Settings. Enter your **server URL** and t
 | Timeline | SELECT on a tweet | open it                         |
 | Timeline | long-press SELECT | refresh                         |
 | Detail   | UP / DOWN         | scroll text                     |
+| Detail   | DOWN at end       | open photo on color watches     |
 | Detail   | SELECT            | like                            |
+| Photo    | BACK              | return to tweet                 |
 
 ## Limitations
 
 - Tweets longer than ~437 UTF-8 bytes are truncated on the watch.
+- Only the first photo on a tweet is shown. Photos are resized to the active
+  color watch screen using the watch-reported dimensions (144x168, 180x180, or
+  200x228) and converted to Pebble's 64-color palette. B/W watches do not open
+  photos.
 - Non-Latin scripts render as boxes unless the watch firmware has the matching
   language pack (Settings → Language in the phone app).
 - twikit uses X's internal API and **breaks every few weeks** when X changes it;

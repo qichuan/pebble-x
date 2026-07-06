@@ -51,14 +51,21 @@ sequential IDs) and are mirrored as `#define`s / status codes in
 `watch/src/c/main.c`. Keep the two in sync.
 
 - **watch → phone:** `CMD` (0 fetch, 1 refresh) + `FEED` (0 following, 1 for-you);
-  `LIKE_INDEX` to like the tweet at that list index.
+  `CMD` 2 requests the photo for `TWEET_INDEX` using `IMAGE_W`, `IMAGE_H`,
+  `IMAGE_COLOR`, `IMAGE_HEAP`, and `IMAGE_ID`; `LIKE_INDEX` likes the tweet at
+  that list index.
 - **phone → watch:** `TWEET_COUNT`, then one message per tweet with `TWEET_INDEX`,
-  `AUTHOR`, `TEXT`, `TIME_AGO`, `LIKED`; `STATUS` (0 ok, 1 not-configured,
-  2 network, 3 server, 4 fetching); `LIKE_RESULT` (echoes index, or negative on failure).
+  `AUTHOR`, `TEXT`, `TIME_AGO`, `LIKED`, `HAS_MEDIA`; `STATUS` (0 ok,
+  1 not-configured, 2 network, 3 server, 4 fetching); `LIKE_RESULT` (echoes
+  index, or negative on failure). Image responses start with `IMAGE_TOTAL` and
+  `IMAGE_CHUNK_COUNT`, then ordered `IMAGE_OFFSET` + `IMAGE_DATA` byte-array
+  chunks, all tagged with `IMAGE_ID`; `IMAGE_ERROR` reports failures.
 
 Tweet **IDs are 64-bit and never sent to the watch** — the watch refers to tweets
-by list index; pkjs holds the id list (in its per-feed `localStorage` cache) and
-maps index → id for likes.
+by list index; pkjs holds the id/media URL list (in its per-feed `localStorage`
+cache) and maps index → id for likes or index → media URL for photo rendering.
+On B/W watch builds the C app ignores `HAS_MEDIA`, so `[photo]` may remain in the
+tweet text but the detail footer and DOWN-to-photo path are not enabled.
 
 ## Key constraints & gotchas
 

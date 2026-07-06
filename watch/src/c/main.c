@@ -1,4 +1,6 @@
 #include <pebble.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define MAX_TWEETS 15
 #define AUTHOR_LEN 24
@@ -8,6 +10,7 @@
 // Commands (watch -> phone)
 #define CMD_FETCH 0
 #define CMD_REFRESH 1
+#define CMD_IMAGE 2
 
 // Feeds
 #define FEED_FOLLOWING 0
@@ -19,6 +22,14 @@
 #define STATUS_NETWORK_ERROR 2
 #define STATUS_SERVER_ERROR 3
 #define STATUS_FETCHING 4
+
+// Image transfer status codes (phone -> watch)
+#define IMAGE_ERROR_MISSING 1
+#define IMAGE_ERROR_NETWORK 2
+#define IMAGE_ERROR_SERVER 3
+#define IMAGE_ERROR_DECODE 4
+
+#define IMAGE_MAX_BYTES (32 * 1024)
 
 // Closest Pebble 64-color match to X/Twitter blue #1DA1F2; black on B&W.
 #define ACCENT_COLOR PBL_IF_COLOR_ELSE(GColorVividCerulean, GColorBlack)
@@ -32,6 +43,7 @@ typedef struct {
   char text[TEXT_LEN];
   char time_ago[TIME_LEN];
   bool liked;
+  bool has_media;
 } Tweet;
 
 static Tweet s_tweets[MAX_TWEETS];
@@ -63,7 +75,20 @@ static bool s_detail_open = false;
 static int s_detail_index = -1;
 static char s_detail_header[AUTHOR_LEN + TIME_LEN + 8];
 
+static Window *s_image_window;
+static BitmapLayer *s_image_bitmap_layer;
+static TextLayer *s_image_status_layer;
+static char s_image_status_text[64];
+static GBitmap *s_image_bitmap;
+static uint8_t *s_image_png_data;
+static int s_image_expected_bytes = 0;
+static int s_image_received_bytes = 0;
+static bool s_image_open = false;
+static int s_image_index = -1;
+static int s_image_request_id = 0;
+
 static void prv_send_cmd(int cmd);
+static void prv_show_image(int index);
 
 // Trim a truncated UTF-8 string so it doesn't end mid-sequence
 static void prv_fix_utf8_tail(char *s) {
@@ -119,8 +144,11 @@ static void prv_update_detail_footer(void) {
   if (!s_detail_open || s_detail_index < 0) {
     return;
   }
-  if (s_tweets[s_detail_index].liked) {
-    prv_set_footer(NULL, true, " Liked");
+  Tweet *t = &s_tweets[s_detail_index];
+  if (t->liked) {
+    prv_set_footer(t->has_media ? "DOWN photo | " : NULL, true, " Liked");
+  } else if (t->has_media) {
+    prv_set_footer("DOWN photo | SELECT to ", true, NULL);
   } else {
     prv_set_footer("SELECT to ", true, NULL);
   }
@@ -138,8 +166,29 @@ static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *conte
   }
 }
 
+static bool prv_detail_is_at_bottom(void) {
+  if (!s_scroll_layer) {
+    return false;
+  }
+  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+  GSize content_size = scroll_layer_get_content_size(s_scroll_layer);
+  GRect frame = layer_get_frame(scroll_layer_get_layer(s_scroll_layer));
+  int max_scroll = content_size.h - frame.size.h;
+  return max_scroll <= 0 || -offset.y >= max_scroll - 2;
+}
+
+static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_detail_index >= 0 && s_tweets[s_detail_index].has_media &&
+      prv_detail_is_at_bottom() && !click_recognizer_is_repeating(recognizer)) {
+    prv_show_image(s_detail_index);
+    return;
+  }
+  scroll_layer_scroll_down_click_handler(recognizer, s_scroll_layer);
+}
+
 static void prv_detail_click_config(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, prv_detail_down_handler);
 }
 
 static void prv_detail_window_load(Window *window) {
@@ -203,6 +252,113 @@ static void prv_show_detail(int index) {
     .unload = prv_detail_window_unload,
   });
   window_stack_push(s_detail_window, true);
+}
+
+// ---- Image window ----
+
+static void prv_clear_image_transfer(void) {
+  if (s_image_png_data) {
+    free(s_image_png_data);
+    s_image_png_data = NULL;
+  }
+  s_image_expected_bytes = 0;
+  s_image_received_bytes = 0;
+}
+
+static void prv_clear_image_bitmap(void) {
+  if (s_image_bitmap_layer) {
+    bitmap_layer_set_bitmap(s_image_bitmap_layer, NULL);
+  }
+  if (s_image_bitmap) {
+    gbitmap_destroy(s_image_bitmap);
+    s_image_bitmap = NULL;
+  }
+}
+
+static void prv_set_image_status(const char *text) {
+  snprintf(s_image_status_text, sizeof(s_image_status_text), "%s", text);
+  if (s_image_status_layer) {
+    text_layer_set_text(s_image_status_layer, s_image_status_text);
+    layer_set_hidden(text_layer_get_layer(s_image_status_layer), false);
+  }
+  if (s_image_bitmap_layer) {
+    layer_set_hidden(bitmap_layer_get_layer(s_image_bitmap_layer), true);
+  }
+}
+
+static bool prv_send_image_cmd(int index, GSize size) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
+    return false;
+  }
+  dict_write_int32(iter, MESSAGE_KEY_CMD, CMD_IMAGE);
+  dict_write_int32(iter, MESSAGE_KEY_FEED, s_feed);
+  dict_write_int32(iter, MESSAGE_KEY_TWEET_INDEX, index);
+  dict_write_int32(iter, MESSAGE_KEY_IMAGE_W, size.w);
+  dict_write_int32(iter, MESSAGE_KEY_IMAGE_H, size.h);
+  dict_write_int32(iter, MESSAGE_KEY_IMAGE_COLOR, PBL_IF_COLOR_ELSE(1, 0));
+  dict_write_int32(iter, MESSAGE_KEY_IMAGE_ID, s_image_request_id);
+  dict_write_int32(iter, MESSAGE_KEY_IMAGE_HEAP, (int)heap_bytes_free());
+  app_message_outbox_send();
+  return true;
+}
+
+static void prv_image_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  const int margin = PBL_IF_ROUND_ELSE(18, 8);
+
+  s_image_open = true;
+  s_image_bitmap_layer = bitmap_layer_create(bounds);
+  bitmap_layer_set_alignment(s_image_bitmap_layer, GAlignCenter);
+  bitmap_layer_set_background_color(s_image_bitmap_layer, GColorBlack);
+  bitmap_layer_set_compositing_mode(s_image_bitmap_layer, GCompOpSet);
+  layer_set_hidden(bitmap_layer_get_layer(s_image_bitmap_layer), true);
+  layer_add_child(window_layer, bitmap_layer_get_layer(s_image_bitmap_layer));
+
+  s_image_status_layer = text_layer_create(GRect(margin, bounds.size.h / 2 - 34,
+                                                 bounds.size.w - margin * 2, 68));
+  text_layer_set_background_color(s_image_status_layer, GColorBlack);
+  text_layer_set_text_color(s_image_status_layer, GColorWhite);
+  text_layer_set_font(s_image_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text_alignment(s_image_status_layer, GTextAlignmentCenter);
+  layer_add_child(window_layer, text_layer_get_layer(s_image_status_layer));
+
+  prv_clear_image_transfer();
+  prv_clear_image_bitmap();
+  prv_set_image_status("Loading photo...");
+  if (!prv_send_image_cmd(s_image_index, bounds.size)) {
+    prv_set_image_status("Phone busy.\nTry again.");
+  }
+}
+
+static void prv_image_window_unload(Window *window) {
+  s_image_open = false;
+  s_image_request_id++;
+  prv_clear_image_transfer();
+  prv_clear_image_bitmap();
+  bitmap_layer_destroy(s_image_bitmap_layer);
+  s_image_bitmap_layer = NULL;
+  text_layer_destroy(s_image_status_layer);
+  s_image_status_layer = NULL;
+  window_destroy(window);
+  s_image_window = NULL;
+}
+
+static void prv_show_image(int index) {
+  if (!PBL_IF_COLOR_ELSE(true, false) || s_image_window || index < 0 ||
+      index >= s_tweet_count || !s_tweets[index].has_media) {
+    return;
+  }
+  s_image_index = index;
+  s_image_request_id++;
+  s_image_window = window_create();
+  window_set_background_color(s_image_window, GColorBlack);
+  window_set_window_handlers(s_image_window, (WindowHandlers) {
+    .load = prv_image_window_load,
+    .unload = prv_image_window_unload,
+  });
+  window_stack_push(s_image_window, true);
 }
 
 // ---- Timeline window ----
@@ -383,9 +539,120 @@ static void prv_retry_fetch(void *context) {
   }
 }
 
+static void prv_image_error(int code) {
+  prv_clear_image_transfer();
+  prv_clear_image_bitmap();
+  switch (code) {
+    case IMAGE_ERROR_MISSING:
+      prv_set_image_status("No photo found.");
+      break;
+    case IMAGE_ERROR_NETWORK:
+      prv_set_image_status("Network error.\nTry again.");
+      break;
+    case IMAGE_ERROR_DECODE:
+      prv_set_image_status("Photo decode failed.");
+      break;
+    case IMAGE_ERROR_SERVER:
+    default:
+      prv_set_image_status("Photo failed.\nTry again.");
+      break;
+  }
+}
+
+static void prv_start_image_transfer(int total_bytes) {
+  prv_clear_image_transfer();
+  prv_clear_image_bitmap();
+  if (total_bytes <= 0 || total_bytes > IMAGE_MAX_BYTES) {
+    prv_set_image_status("Photo too large.");
+    return;
+  }
+  s_image_png_data = malloc(total_bytes);
+  if (!s_image_png_data) {
+    prv_set_image_status("Not enough memory.");
+    return;
+  }
+  s_image_expected_bytes = total_bytes;
+  s_image_received_bytes = 0;
+  prv_set_image_status("Loading photo...\n0%");
+}
+
+static void prv_finish_image_transfer(void) {
+  if (!s_image_png_data || s_image_expected_bytes <= 0) {
+    return;
+  }
+  GBitmap *bitmap = gbitmap_create_from_png_data(s_image_png_data, s_image_expected_bytes);
+  prv_clear_image_transfer();
+  if (!bitmap) {
+    prv_image_error(IMAGE_ERROR_DECODE);
+    return;
+  }
+  prv_clear_image_bitmap();
+  s_image_bitmap = bitmap;
+  bitmap_layer_set_bitmap(s_image_bitmap_layer, s_image_bitmap);
+  layer_set_hidden(text_layer_get_layer(s_image_status_layer), true);
+  layer_set_hidden(bitmap_layer_get_layer(s_image_bitmap_layer), false);
+}
+
+static void prv_receive_image_chunk(DictionaryIterator *iter) {
+  if (!s_image_png_data || s_image_expected_bytes <= 0) {
+    return;
+  }
+  Tuple *offset_tuple = dict_find(iter, MESSAGE_KEY_IMAGE_OFFSET);
+  Tuple *data_tuple = dict_find(iter, MESSAGE_KEY_IMAGE_DATA);
+  if (!offset_tuple || !data_tuple || data_tuple->length == 0) {
+    return;
+  }
+
+  int offset = offset_tuple->value->int32;
+  int length = data_tuple->length;
+  if (offset < 0 || offset + length > s_image_expected_bytes) {
+    prv_image_error(IMAGE_ERROR_DECODE);
+    return;
+  }
+  memcpy(s_image_png_data + offset, data_tuple->value->data, length);
+
+  int end = offset + length;
+  if (end > s_image_received_bytes) {
+    s_image_received_bytes = end;
+  }
+
+  if (s_image_received_bytes >= s_image_expected_bytes) {
+    prv_finish_image_transfer();
+  } else if (s_image_status_layer) {
+    int pct = (s_image_received_bytes * 100) / s_image_expected_bytes;
+    snprintf(s_image_status_text, sizeof(s_image_status_text), "Loading photo...\n%d%%", pct);
+    text_layer_set_text(s_image_status_layer, s_image_status_text);
+  }
+}
+
+static void prv_inbox_image_received(DictionaryIterator *iter, int request_id) {
+  if (!s_image_open || request_id != s_image_request_id) {
+    return;
+  }
+
+  Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_IMAGE_ERROR);
+  if (error_tuple) {
+    prv_image_error(error_tuple->value->int32);
+    return;
+  }
+
+  Tuple *total_tuple = dict_find(iter, MESSAGE_KEY_IMAGE_TOTAL);
+  if (total_tuple) {
+    prv_start_image_transfer(total_tuple->value->int32);
+  }
+
+  if (dict_find(iter, MESSAGE_KEY_IMAGE_DATA)) {
+    prv_receive_image_chunk(iter);
+  }
+}
+
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   s_got_reply = true;
   Tuple *t;
+
+  if ((t = dict_find(iter, MESSAGE_KEY_IMAGE_ID))) {
+    prv_inbox_image_received(iter, t->value->int32);
+  }
 
   if ((t = dict_find(iter, MESSAGE_KEY_STATUS))) {
     switch (t->value->int32) {
@@ -419,6 +686,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     int index = t->value->int32;
     if (index >= 0 && index < MAX_TWEETS) {
       Tweet *tweet = &s_tweets[index];
+      tweet->has_media = false;
       Tuple *field;
       if ((field = dict_find(iter, MESSAGE_KEY_AUTHOR))) {
         snprintf(tweet->author, sizeof(tweet->author), "%s", field->value->cstring);
@@ -433,6 +701,9 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       }
       if ((field = dict_find(iter, MESSAGE_KEY_LIKED))) {
         tweet->liked = field->value->int32 != 0;
+      }
+      if ((field = dict_find(iter, MESSAGE_KEY_HAS_MEDIA))) {
+        tweet->has_media = PBL_IF_COLOR_ELSE(field->value->int32 != 0, false);
       }
       if (index + 1 > s_tweet_count) {
         s_tweet_count = index + 1;
@@ -468,7 +739,7 @@ static void prv_init(void) {
   window_stack_push(s_timeline_window, true);
 
   app_message_register_inbox_received(prv_inbox_received);
-  app_message_open(1024, 64);
+  app_message_open(1024, 128);
 
   prv_send_cmd(CMD_FETCH);
   app_timer_register(1000, prv_retry_fetch, NULL);

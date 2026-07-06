@@ -34,7 +34,18 @@
       "TIME_AGO",
       "LIKED",
       "STATUS",
-      "LIKE_RESULT"
+      "LIKE_RESULT",
+      "HAS_MEDIA",
+      "IMAGE_W",
+      "IMAGE_H",
+      "IMAGE_COLOR",
+      "IMAGE_ID",
+      "IMAGE_TOTAL",
+      "IMAGE_OFFSET",
+      "IMAGE_CHUNK_COUNT",
+      "IMAGE_DATA",
+      "IMAGE_ERROR",
+      "IMAGE_HEAP"
     ],
     "resources": {
       "media": [

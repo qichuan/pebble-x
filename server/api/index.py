@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _common import make_client, tweet_to_dict
+from _common import make_client, render_media_for_watch, tweet_to_dict
 
 MAX_TWEETS = 15
 
@@ -32,6 +32,14 @@ def require_token(authorization: str = Header(default="")) -> None:
 
 class LikeBody(BaseModel):
     tweet_id: str
+
+
+class MediaBody(BaseModel):
+    media_url: str
+    width: int
+    height: int
+    color: bool = True
+    heap: int = 0
 
 
 @app.get("/api/health")
@@ -64,3 +72,12 @@ async def like(body: LikeBody) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"ok": True}
+
+
+@app.post("/api/media", dependencies=[Depends(require_token)])
+async def media(body: MediaBody) -> dict:
+    try:
+        rendered = render_media_for_watch(body.media_url, body.width, body.height, body.color, body.heap)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return rendered

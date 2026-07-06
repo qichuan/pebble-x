@@ -7,12 +7,22 @@ var MAX_TWEETS = 15;
 var MAX_TEXT_BYTES = 437;   // must fit the watch-side buffer (TEXT_LEN 441)
 var MAX_AUTHOR_BYTES = 23;
 var CACHE_FRESH_MS = 10 * 60 * 1000;  // older caches are re-fetched in the background
+var IMAGE_CHUNK_BYTES = 512;
+
+var CMD_FETCH = 0;
+var CMD_REFRESH = 1;
+var CMD_IMAGE = 2;
 
 var STATUS_OK = 0;
 var STATUS_NOT_CONFIGURED = 1;
 var STATUS_NETWORK_ERROR = 2;
 var STATUS_SERVER_ERROR = 3;
 var STATUS_FETCHING = 4;
+
+var IMAGE_ERROR_MISSING = 1;
+var IMAGE_ERROR_NETWORK = 2;
+var IMAGE_ERROR_SERVER = 3;
+var IMAGE_ERROR_DECODE = 4;
 
 var FEED_NAMES = ['following', 'foryou'];
 
@@ -53,6 +63,34 @@ function serverBase() {
   return (localStorage.getItem('server_url') || '').replace(/\/+$/, '');
 }
 
+function decodeBase64(input) {
+  input = (input || '').replace(/[^A-Za-z0-9+/=]/g, '');
+  if (typeof atob === 'function') {
+    var binary = atob(input);
+    var bytes = [];
+    for (var i = 0; i < binary.length; i++) bytes.push(binary.charCodeAt(i) & 255);
+    return bytes;
+  }
+
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var out = [];
+  var buffer = 0;
+  var bits = 0;
+  for (var j = 0; j < input.length; j++) {
+    var ch = input.charAt(j);
+    if (ch === '=') break;
+    var value = chars.indexOf(ch);
+    if (value < 0) continue;
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buffer >> bits) & 255);
+    }
+  }
+  return out;
+}
+
 // ---- Server requests ----
 
 function serverRequest(method, path, body, callback) {
@@ -81,18 +119,30 @@ function fetchTimeline(feed, callback) {
   serverRequest('GET', '/api/timeline?feed=' + feed, null, function (err, data) {
     if (err) return callback(err);
     var tweets = ((data && data.tweets) || []).map(function (t) {
+      var mediaUrl = t.media_url || '';
       return {
         id: t.id,
         author: t.handle || t.name || '?',
         text: t.text || '',
         created_at: t.created_at,
         liked: !!t.favorited,
-        has_media: !!t.has_media
+        has_media: !!mediaUrl,
+        media_url: mediaUrl
       };
     });
     saveJSON('cache_' + feed, { fetchedAt: Date.now(), tweets: tweets });
     callback(null, tweets);
   });
+}
+
+function fetchMedia(mediaUrl, width, height, color, heap, callback) {
+  serverRequest('POST', '/api/media', {
+    media_url: mediaUrl,
+    width: width,
+    height: height,
+    color: !!color,
+    heap: heap || 0
+  }, callback);
 }
 
 function likeTweet(feed, index, callback) {
@@ -161,15 +211,69 @@ function sendTimeline(tweets) {
   enqueue({ TWEET_COUNT: tweets.length, STATUS: STATUS_OK });
   tweets.forEach(function (t, i) {
     var text = t.text;
-    if (t.has_media) text += ' [photo]';
+    var hasPhoto = !!(t.has_media && t.media_url);
+    if (hasPhoto) text += ' [photo]';
     enqueue({
       TWEET_INDEX: i,
       AUTHOR: truncateUtf8(t.author, MAX_AUTHOR_BYTES),
       TEXT: truncateUtf8(text, MAX_TEXT_BYTES),
       TIME_AGO: timeAgo(t.created_at),
-      LIKED: t.liked ? 1 : 0
+      LIKED: t.liked ? 1 : 0,
+      HAS_MEDIA: hasPhoto ? 1 : 0
     });
   });
+}
+
+function sendImageError(requestId, code) {
+  enqueue({ IMAGE_ID: requestId, IMAGE_ERROR: code });
+}
+
+function sendImagePayload(requestId, data) {
+  var bytes = decodeBase64(data && data.image_base64);
+  if (!bytes.length) return sendImageError(requestId, IMAGE_ERROR_DECODE);
+
+  var chunkCount = Math.ceil(bytes.length / IMAGE_CHUNK_BYTES);
+  enqueue({
+    IMAGE_ID: requestId,
+    IMAGE_TOTAL: bytes.length,
+    IMAGE_CHUNK_COUNT: chunkCount,
+    IMAGE_W: data.width || 0,
+    IMAGE_H: data.height || 0
+  });
+
+  for (var i = 0; i < chunkCount; i++) {
+    var start = i * IMAGE_CHUNK_BYTES;
+    var end = Math.min(start + IMAGE_CHUNK_BYTES, bytes.length);
+    var chunk = [];
+    for (var j = start; j < end; j++) chunk.push(bytes[j]);
+    enqueue({
+      IMAGE_ID: requestId,
+      IMAGE_OFFSET: start,
+      IMAGE_DATA: chunk
+    });
+  }
+}
+
+function deliverImage(payload, feed) {
+  var requestId = payload.IMAGE_ID || 0;
+  var index = payload.TWEET_INDEX;
+  var cache = loadJSON('cache_' + feed);
+  if (!cache || !cache.tweets || !cache.tweets[index] || !cache.tweets[index].media_url) {
+    return sendImageError(requestId, IMAGE_ERROR_MISSING);
+  }
+
+  fetchMedia(
+    cache.tweets[index].media_url,
+    payload.IMAGE_W || 144,
+    payload.IMAGE_H || 168,
+    payload.IMAGE_COLOR !== 0,
+    payload.IMAGE_HEAP || 0,
+    function (err, data) {
+      if (err === 'network') return sendImageError(requestId, IMAGE_ERROR_NETWORK);
+      if (err) return sendImageError(requestId, IMAGE_ERROR_SERVER);
+      sendImagePayload(requestId, data);
+    }
+  );
 }
 
 function currentFeed(payload) {
@@ -214,7 +318,11 @@ Pebble.addEventListener('appmessage', function (e) {
   var payload = e.payload;
   var feed = currentFeed(payload);
   if (payload.CMD !== undefined) {
-    deliverTimeline(payload.CMD === 1, feed);
+    if (payload.CMD === CMD_FETCH || payload.CMD === CMD_REFRESH) {
+      deliverTimeline(payload.CMD === CMD_REFRESH, feed);
+    } else if (payload.CMD === CMD_IMAGE) {
+      deliverImage(payload, feed);
+    }
   }
   if (payload.LIKE_INDEX !== undefined) {
     var index = payload.LIKE_INDEX;

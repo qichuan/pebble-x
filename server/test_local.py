@@ -21,7 +21,7 @@ class FakeTweet:
         self.text = f"Tweet number {i} 中文"
         self.created_at = "Mon Jul 06 09:00:00 +0000 2026"
         self.favorited = False
-        self.media = ["m"] if media else []
+        self.media = [{"media_url_https": f"https://pbs.twimg.com/media/fake-{i}.jpg"}] if media else []
 
 
 class FakeClient:
@@ -69,7 +69,8 @@ with mock.patch("_common.Client", FakeClient):
     ids = [t["id"] for t in b["tweets"]]
     assert ids == sorted(ids, key=int, reverse=True) and ids[0] == "1019", ids
     assert b["tweets"][2]["has_media"] is True and b["tweets"][0]["has_media"] is False
-    print("PASS  following -> 15 tweets newest-first, media flag, handle")
+    assert b["tweets"][2]["media_url"] == "https://pbs.twimg.com/media/fake-17.jpg"
+    print("PASS  following -> 15 tweets newest-first, media URL, handle")
 
     r = client.get("/api/timeline?feed=foryou", headers=AUTH)
     b = r.json()
@@ -83,6 +84,29 @@ with mock.patch("_common.Client", FakeClient):
     r = client.post("/api/like", json={}, headers=AUTH)
     assert r.status_code == 422, r.status_code  # pydantic: missing tweet_id
     print("PASS  like no-id -> 422")
+
+    with mock.patch(
+        "index.render_media_for_watch",
+        return_value={
+            "width": 144,
+            "height": 120,
+            "byte_count": 7,
+            "image_base64": "iVBORw0=",
+        },
+    ):
+        r = client.post(
+            "/api/media",
+            json={
+                "media_url": "https://pbs.twimg.com/media/fake-17.jpg",
+                "width": 144,
+                "height": 168,
+                "color": True,
+            },
+            headers=AUTH,
+        )
+        b = r.json()
+        assert r.status_code == 200 and b["width"] == 144 and b["image_base64"], b
+        print("PASS  media -> watch PNG payload")
 
 # Regression for the 2026-07 X payload change: real twikit (no network) must
 # parse a user whose legacy.entities.description has no 'urls' key, and one

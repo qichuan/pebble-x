@@ -2,12 +2,22 @@
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 """
+import base64
+import io
 import json
 import os
+import urllib.parse
+import urllib.request
 
+from PIL import Image, ImageOps
 from twikit import Client
 
 import _twikit_patch  # noqa: F401  applies the ondemand.s login fix on import
+
+MAX_MEDIA_DOWNLOAD_BYTES = 5 * 1024 * 1024
+MAX_RENDERED_MEDIA_BYTES = 28 * 1024
+MIN_RENDERED_DIMENSION = 64
+ALLOWED_MEDIA_HOST_SUFFIXES = ("twimg.com",)
 
 
 def make_client() -> Client:
@@ -24,9 +34,84 @@ def make_client() -> Client:
     return client
 
 
+def _value(obj, key):
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _is_allowed_media_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return (
+        parsed.scheme in ("https", "http")
+        and bool(host)
+        and any(
+            host == suffix or host.endswith("." + suffix)
+            for suffix in ALLOWED_MEDIA_HOST_SUFFIXES
+        )
+    )
+
+
+def _first_http_url(value):
+    if (
+        isinstance(value, str)
+        and value.startswith(("https://", "http://"))
+        and _is_allowed_media_url(value)
+    ):
+        return value
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _first_http_url(item)
+            if found:
+                return found
+    if isinstance(value, dict):
+        for key in (
+            "media_url_https",
+            "media_url",
+            "url",
+            "preview_image_url",
+            "thumbnail_url",
+            "image_url",
+        ):
+            found = _first_http_url(value.get(key))
+            if found:
+                return found
+    return None
+
+
+def media_url(media_item) -> str:
+    """Best-effort extraction of a directly downloadable image URL."""
+    direct = _first_http_url(media_item)
+    if direct:
+        return direct
+    for key in (
+        "media_url_https",
+        "media_url",
+        "url",
+        "preview_image_url",
+        "thumbnail_url",
+        "image_url",
+    ):
+        direct = _first_http_url(_value(media_item, key))
+        if direct:
+            return direct
+    return ""
+
+
+def first_media_url(tweet) -> str:
+    media = getattr(tweet, "media", None) or []
+    for item in media:
+        direct = media_url(item)
+        if direct:
+            return direct
+    return ""
+
+
 def tweet_to_dict(t) -> dict:
     """Flatten a twikit Tweet into the small shape the watch needs."""
     media = getattr(t, "media", None) or []
+    url = first_media_url(t)
     return {
         "id": t.id,
         "name": getattr(t.user, "name", "") or "",
@@ -34,5 +119,135 @@ def tweet_to_dict(t) -> dict:
         "text": t.text or "",
         "created_at": getattr(t, "created_at", "") or "",
         "favorited": bool(getattr(t, "favorited", False)),
-        "has_media": len(media) > 0,
+        "has_media": bool(url),
+        "media_url": url,
     }
+
+
+def _validate_media_url(url: str) -> str:
+    if not _is_allowed_media_url(url):
+        raise ValueError("unsupported media host")
+    return url
+
+
+def _fetch_media(url: str) -> bytes:
+    req = urllib.request.Request(
+        _validate_media_url(url),
+        headers={"User-Agent": "Peep Pebble image proxy/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        data = resp.read(MAX_MEDIA_DOWNLOAD_BYTES + 1)
+    if len(data) > MAX_MEDIA_DOWNLOAD_BYTES:
+        raise ValueError("media file is too large")
+    return data
+
+
+def _pebble_palette_image() -> Image.Image:
+    levels = (0, 85, 170, 255)
+    palette = []
+    for r in levels:
+        for g in levels:
+            for b in levels:
+                palette.extend((r, g, b))
+    palette.extend((0, 0, 0) * (256 - 64))
+    pal = Image.new("P", (1, 1))
+    pal.putpalette(palette)
+    return pal
+
+
+def _fit_image(source: Image.Image, max_width: int, max_height: int) -> Image.Image:
+    width = max(1, min(int(max_width), 240))
+    height = max(1, min(int(max_height), 240))
+    image = ImageOps.exif_transpose(source)
+    image.thumbnail((width, height), Image.Resampling.LANCZOS)
+    if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+        background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        background.alpha_composite(image.convert("RGBA"))
+        image = background.convert("RGB")
+    else:
+        image = image.convert("RGB")
+    return image
+
+
+def _encode_watch_png(image: Image.Image, color: bool) -> bytes:
+    if color:
+        output = image.quantize(
+            palette=_pebble_palette_image(),
+            dither=Image.Dither.FLOYDSTEINBERG,
+        )
+    else:
+        output = ImageOps.grayscale(image).convert(
+            "1",
+            dither=Image.Dither.FLOYDSTEINBERG,
+        )
+
+    buf = io.BytesIO()
+    output.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _decoded_bitmap_bytes(width: int, height: int, color: bool) -> int:
+    if color:
+        return width * height
+    row_bytes = ((width + 31) // 32) * 4
+    return row_bytes * height
+
+
+def _heap_reserve_bytes(color: bool) -> int:
+    return 8 * 1024 if color else 2 * 1024
+
+
+def _rendered_media_byte_limit(width: int, height: int, color: bool, heap_bytes: int) -> int:
+    if heap_bytes > 0:
+        decoded_bytes = _decoded_bitmap_bytes(width, height, color)
+        reserve = _heap_reserve_bytes(color)
+        return max(
+            2 * 1024,
+            min(MAX_RENDERED_MEDIA_BYTES, heap_bytes - decoded_bytes - reserve),
+        )
+    if not color:
+        return 6 * 1024
+    if width >= 200 or height > 200:
+        return MAX_RENDERED_MEDIA_BYTES
+    if width * height >= 32000:
+        return 10 * 1024
+    return 14 * 1024
+
+
+def render_media_for_watch(
+    media_url_value: str,
+    width: int,
+    height: int,
+    color: bool,
+    heap_bytes: int = 0,
+) -> dict:
+    """Download and render media into a small PNG the watch can decode."""
+    original = Image.open(io.BytesIO(_fetch_media(media_url_value)))
+    max_width = max(1, min(int(width), 240))
+    max_height = max(1, min(int(height), 240))
+
+    while True:
+        fitted = _fit_image(original.copy(), max_width, max_height)
+        png = _encode_watch_png(fitted, color)
+        heap = int(heap_bytes or 0)
+        byte_limit = _rendered_media_byte_limit(fitted.width, fitted.height, color, heap)
+        fits_heap = (
+            heap <= 0
+            or _decoded_bitmap_bytes(fitted.width, fitted.height, color)
+            + len(png)
+            + _heap_reserve_bytes(color)
+            <= heap
+        )
+        if (
+            (len(png) <= byte_limit and fits_heap)
+            or max_width <= MIN_RENDERED_DIMENSION
+            or max_height <= MIN_RENDERED_DIMENSION
+        ):
+            return {
+                "width": fitted.width,
+                "height": fitted.height,
+                "byte_count": len(png),
+                "image_base64": base64.b64encode(png).decode("ascii"),
+            }
+        max_width = max(MIN_RENDERED_DIMENSION, int(max_width * 0.9))
+        max_height = max(MIN_RENDERED_DIMENSION, int(max_height * 0.9))
