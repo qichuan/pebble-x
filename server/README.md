@@ -10,7 +10,7 @@ server/
                       GET  /api/health                            → { ok: true }   (no auth)
                       GET  /api/timeline?feed=following|foryou     → { feed, tweets: [...] }
                       POST /api/like  {tweet_id}                   → { ok: true }
-                      POST /api/media {media_url,width,height,color,heap} → watch PNG
+                      POST /api/media {media_url?,tweet_id?,width,height,color,heap} → watch PNG
   api/_common.py    twikit client, tweet mapping, photo rendering
   vercel.json       rewrites all requests to the ASGI app
   login.py          run locally once to mint the X session cookie (not deployed)
@@ -89,7 +89,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" -d '{"tweet_id":"123"}' "$URL/api/like"
 curl -X POST -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
-     -d '{"media_url":"https://pbs.twimg.com/media/example.jpg","width":144,"height":168,"color":true,"heap":50000}' \
+     -d '{"media_url":"https://pbs.twimg.com/media/example.jpg","tweet_id":"123","width":144,"height":168,"color":true,"heap":50000}' \
      "$URL/api/media"
 ```
 

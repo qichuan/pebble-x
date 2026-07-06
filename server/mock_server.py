@@ -47,6 +47,9 @@ class FakeClient:
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 50, "foryoubot") for i in range(count)]
 
+    async def get_tweet_by_id(self, tid):
+        return FakeTweet(1, "janedev", media=True)
+
     async def favorite_tweet(self, tid):
         print("LIKED tweet", tid, flush=True)
         return True

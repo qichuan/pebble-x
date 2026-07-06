@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _common import make_client, render_media_for_watch, tweet_to_dict
+from _common import first_media_url, make_client, render_media_for_watch, tweet_to_dict
 
 MAX_TWEETS = 15
 
@@ -35,7 +35,8 @@ class LikeBody(BaseModel):
 
 
 class MediaBody(BaseModel):
-    media_url: str
+    media_url: str = ""
+    tweet_id: str = ""
     width: int
     height: int
     color: bool = True
@@ -77,7 +78,14 @@ async def like(body: LikeBody) -> dict:
 @app.post("/api/media", dependencies=[Depends(require_token)])
 async def media(body: MediaBody) -> dict:
     try:
-        rendered = render_media_for_watch(body.media_url, body.width, body.height, body.color, body.heap)
+        media_url = body.media_url
+        if not media_url and body.tweet_id:
+            client = make_client()
+            tweet = await client.get_tweet_by_id(body.tweet_id)
+            media_url = first_media_url(tweet)
+        if not media_url:
+            raise ValueError("no photo found")
+        rendered = render_media_for_watch(media_url, body.width, body.height, body.color, body.heap)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return rendered

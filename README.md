@@ -45,7 +45,7 @@ internet; `/api/timeline` and `/api/like` require `Authorization: Bearer <APP_TO
 | GET    | `/api/health`                         | —               | `{ ok: true }`         |
 | GET    | `/api/timeline?feed=following\|foryou` | —                 | `{ feed, tweets: [] }` |
 | POST   | `/api/like`                           | `{ tweet_id }`    | `{ ok: true }`         |
-| POST   | `/api/media`                          | `{ media_url, width, height, color }` | `{ width, height, byte_count, image_base64 }` |
+| POST   | `/api/media`                          | `{ media_url?, tweet_id?, width, height, color, heap? }` | `{ width, height, byte_count, image_base64 }` |
 
 Each `tweets[]` item: `{ id, name, handle, text, created_at, favorited, has_media, media_url }`
 (max 15 per response). Errors: `401` (bad/missing token), `422` (bad body),

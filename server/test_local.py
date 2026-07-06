@@ -38,6 +38,9 @@ class FakeClient:
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 100) for i in range(count)]
 
+    async def get_tweet_by_id(self, tid):
+        return FakeTweet(77, media=True)
+
     async def favorite_tweet(self, tid):
         assert tid == "1000"
         return True
@@ -98,9 +101,11 @@ with mock.patch("_common.Client", FakeClient):
             "/api/media",
             json={
                 "media_url": "https://pbs.twimg.com/media/fake-17.jpg",
+                "tweet_id": "1017",
                 "width": 144,
                 "height": 168,
                 "color": True,
+                "heap": 50000,
             },
             headers=AUTH,
         )
@@ -108,10 +113,41 @@ with mock.patch("_common.Client", FakeClient):
         assert r.status_code == 200 and b["width"] == 144 and b["image_base64"], b
         print("PASS  media -> watch PNG payload")
 
+    with mock.patch(
+        "index.render_media_for_watch",
+        return_value={
+            "width": 144,
+            "height": 120,
+            "byte_count": 7,
+            "image_base64": "iVBORw0=",
+        },
+    ) as render_mock:
+        r = client.post(
+            "/api/media",
+            json={
+                "tweet_id": "1077",
+                "width": 144,
+                "height": 168,
+                "color": True,
+                "heap": 50000,
+            },
+            headers=AUTH,
+        )
+        assert r.status_code == 200, r.json()
+        assert render_mock.call_args.args[0] == "https://pbs.twimg.com/media/fake-77.jpg"
+        print("PASS  media fallback -> resolves URL from tweet id")
+
 # Regression for the 2026-07 X payload change: real twikit (no network) must
 # parse a user whose legacy.entities.description has no 'urls' key, and one
 # whose fields moved out of `legacy` into the new `core`/`avatar` groups.
 from twikit.user import User as TwikitUser
+from twikit.media import Photo as TwikitPhoto
+
+import _common
+
+photo = TwikitPhoto(None, {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/p.jpg"})
+assert _common.media_url(photo) == "https://pbs.twimg.com/media/p.jpg"
+print("PASS  twikit media parse -> extracts Photo.media_url")
 
 slim = {
     "rest_id": "42",

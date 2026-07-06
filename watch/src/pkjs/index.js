@@ -135,9 +135,10 @@ function fetchTimeline(feed, callback) {
   });
 }
 
-function fetchMedia(mediaUrl, width, height, color, heap, callback) {
+function fetchMedia(mediaUrl, tweetId, width, height, color, heap, callback) {
   serverRequest('POST', '/api/media', {
-    media_url: mediaUrl,
+    media_url: mediaUrl || '',
+    tweet_id: tweetId || '',
     width: width,
     height: height,
     color: !!color,
@@ -258,12 +259,14 @@ function deliverImage(payload, feed) {
   var requestId = payload.IMAGE_ID || 0;
   var index = payload.TWEET_INDEX;
   var cache = loadJSON('cache_' + feed);
-  if (!cache || !cache.tweets || !cache.tweets[index] || !cache.tweets[index].media_url) {
+  var tweet = cache && cache.tweets && cache.tweets[index];
+  if (!tweet || (!tweet.media_url && !tweet.id)) {
     return sendImageError(requestId, IMAGE_ERROR_MISSING);
   }
 
   fetchMedia(
-    cache.tweets[index].media_url,
+    tweet.media_url,
+    tweet.id,
     payload.IMAGE_W || 144,
     payload.IMAGE_H || 168,
     payload.IMAGE_COLOR !== 0,
