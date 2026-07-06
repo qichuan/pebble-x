@@ -100,7 +100,8 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   the watch via a one-time 10-minute pairing code (`tweetfit:pair`,
   `POST /api/pair`, exchanged by the settings page over CORS — its single
   secret field auto-detects: 8 chars of the code alphabet = pairing code,
-  anything else = full token). `expected_token()` in `index.py` reads Redis
+  anything else = full token; `POST /api/pair/new` (Bearer) mints a code on
+  demand for the wizard's "Get pairing code" button). `expected_token()` in `index.py` reads Redis
   first, `APP_TOKEN` env as legacy fallback; `/api/config/status` reports the
   provenance as `token_source` so the wizard can explain env-claimed servers.
   `GET /api/config/status` is deliberately unauthenticated but boolean/

@@ -15,6 +15,7 @@ server/
                       POST /api/media {media_url?,tweet_id?,image_index?,width,height,color,heap} → watch PNG
                       POST /api/config {auth_token, ct0}           → { ok, verified, screen_name, pair_code, … }
                                                                      (claims an unclaimed server; Bearer after)
+                      POST /api/pair/new                           → { pair_code }  (Bearer; mint on demand)
                       POST /api/pair {code}                        → { app_token }  (one-time, no auth)
                       GET  /api/config/status                      → { claimed, storage, cookies, source } (no auth)
   api/_common.py    twikit client, cookie read-through, tweet mapping, photo rendering
@@ -83,9 +84,10 @@ fresh cookies — **no redeploy needed**.
 ### 4. Pair the watch
 
 Pebble app → TweetFit → Settings: enter the server URL and, in the single
-secret field, the **pairing code** from the wizard — the page exchanges it for
-the access token behind the scenes. (Pasting a full access token into the same
-field also works; the wizard can reveal it via the Show/Copy buttons.)
+secret field, a **pairing code** — the page exchanges it for the access token
+behind the scenes. Get a code any time from `/setup` → **Get pairing code**
+(no need to re-paste cookies). Pasting a full access token into the same field
+also works; the wizard can reveal it via the Show/Copy buttons.
 
 ### Migrating from the env-var setup
 

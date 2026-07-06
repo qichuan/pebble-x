@@ -11,6 +11,7 @@ The setup wizard (browser, not the watch) uses:
     POST /api/config {auth_token, ct0}          -> { ok, verified, screen_name,
                                                      pair_code, claimed, app_token? }
                                                    (claims an unclaimed server; Bearer after)
+    POST /api/pair/new                          -> { pair_code }  (Bearer; mint code on demand)
     POST /api/pair {code}                       -> { app_token }  (one-time exchange, no auth)
     GET  /api/config/status                     -> { claimed, storage, cookies, source } (no auth)
 
@@ -130,8 +131,7 @@ async def config(body: ConfigBody, authorization: str = Header(default="")) -> d
     cookies = {"auth_token": body.auth_token, "ct0": body.ct0}
     _storage.kv_set(_storage.COOKIES_KEY, json.dumps(cookies))
 
-    pair_code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(8))
-    _storage.kv_set(_storage.PAIR_KEY, pair_code, ex_seconds=PAIR_TTL_SECONDS)
+    pair_code = _mint_pair_code()
 
     result = {
         "ok": True,
@@ -153,6 +153,25 @@ async def config(body: ConfigBody, authorization: str = Header(default="")) -> d
     except Exception as e:
         result["detail"] = str(e)
     return result
+
+
+def _mint_pair_code() -> str:
+    code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(8))
+    _storage.kv_set(_storage.PAIR_KEY, code, ex_seconds=PAIR_TTL_SECONDS)
+    return code
+
+
+@app.post("/api/pair/new", dependencies=[Depends(require_token)])
+async def pair_new() -> dict:
+    """Mint a fresh pairing code on demand — lets the wizard pair a watch
+    without re-pasting cookies."""
+    if not _storage.storage_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="no cookie storage configured — connect Upstash Redis "
+            "(Vercel project → Storage) and redeploy",
+        )
+    return {"pair_code": _mint_pair_code(), "pair_expires_s": PAIR_TTL_SECONDS}
 
 
 @app.post("/api/pair")

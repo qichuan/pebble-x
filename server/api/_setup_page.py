@@ -105,21 +105,22 @@ SETUP_HTML = r"""<!DOCTYPE html>
     <button id="save" class="primary" disabled>Save to server</button>
   </div>
 
-  <div class="card" id="pair_card" style="display:none">
-    <label>Watch pairing code</label>
-    <div class="paircode" id="pair_code"></div>
-    <p class="hint">On your phone: Pebble app &rarr; <b>TweetFit</b> &rarr; Settings &rarr;
-      enter this server's URL and this code. Expires in <span id="pair_ttl">10:00</span>;
-      re-save here for a fresh one.</p>
+  <div class="card">
+    <label>Access token</label>
+    <div class="tokenval" id="token_val" style="display:none"></div>
+    <span id="token_btns" style="display:none">
+      <button class="minibtn" id="token_show">Show</button>
+      <button class="minibtn" id="token_copy">Copy</button>
+    </span>
+    <p class="hint" id="token_state" style="margin-top:10px">Checking&hellip;</p>
   </div>
 
-  <div class="card" id="token_card" style="display:none">
-    <label>Access token</label>
-    <div class="tokenval" id="token_val"></div>
-    <button class="minibtn" id="token_show">Show</button>
-    <button class="minibtn" id="token_copy">Copy</button>
-    <p class="hint" style="margin-top:10px">The watch's credential &mdash; a pairing code
-      just delivers it. Kept in this browser for future cookie refreshes.</p>
+  <div class="card">
+    <label>Pair your watch</label>
+    <div class="paircode" id="pair_code" style="display:none"></div>
+    <p class="hint" id="pair_hint">On your phone: Pebble app &rarr; <b>TweetFit</b> &rarr;
+      Settings &rarr; enter this server's URL and a pairing code.</p>
+    <button class="primary" id="pair_btn" disabled>Get pairing code</button>
   </div>
   <div id="msg"></div>
 
@@ -191,7 +192,8 @@ SETUP_HTML = r"""<!DOCTYPE html>
 
   function updateTokenUI() {
     show('claim_note', claimed === false);
-    show('token_card', !!savedToken);
+    show('token_val', !!savedToken);
+    show('token_btns', !!savedToken);
     renderTokenValue();
     var needInput = claimed === true && !savedToken;
     show('token_row', needInput);
@@ -199,6 +201,26 @@ SETUP_HTML = r"""<!DOCTYPE html>
       document.getElementById('token_hint').textContent =
         tokenSource === 'env' ? HINT_ENV : HINT_OTHER_BROWSER;
     }
+    var state = document.getElementById('token_state');
+    if (savedToken) {
+      state.textContent = "The watch's credential — a pairing code just delivers " +
+        'it. Kept in this browser for future visits.';
+    } else if (claimed === false) {
+      state.textContent = 'No access token yet — it is generated automatically the ' +
+        'first time you save your X cookies above.';
+    } else if (claimed === true && tokenSource === 'env') {
+      state.textContent = 'Using the APP_TOKEN env var — enter its value in the ' +
+        'save section above to authorize this browser.';
+    } else if (claimed === true) {
+      state.textContent = 'Set up from another browser — enter its token in the ' +
+        'save section above.';
+    } else {
+      state.textContent = 'Checking…';
+    }
+  }
+
+  function updatePairUI() {
+    document.getElementById('pair_btn').disabled = !currentToken();
   }
 
   function updateSave() {
@@ -224,18 +246,31 @@ SETUP_HTML = r"""<!DOCTYPE html>
     updateSave();
   }
 
+  var PAIR_HINT_IDLE = 'On your phone: Pebble app → TweetFit → Settings → ' +
+    "enter this server's URL and a pairing code.";
+
   function showPair(code, ttlSeconds) {
-    show('pair_card', true);
-    document.getElementById('pair_code').textContent =
-      code.slice(0, 4) + '-' + code.slice(4);
+    var codeEl = document.getElementById('pair_code');
+    var hintEl = document.getElementById('pair_hint');
+    show('pair_code', true);
+    codeEl.textContent = code.slice(0, 4) + '-' + code.slice(4);
     var end = Date.now() + ttlSeconds * 1000;
     if (pairTimer) clearInterval(pairTimer);
-    pairTimer = setInterval(function () {
+    function tick() {
       var left = Math.max(0, Math.round((end - Date.now()) / 1000));
       var m = Math.floor(left / 60), s = left % 60;
-      document.getElementById('pair_ttl').textContent = m + ':' + (s < 10 ? '0' : '') + s;
-      if (!left) { clearInterval(pairTimer); show('pair_card', false); }
-    }, 1000);
+      hintEl.textContent = 'On your phone: Pebble app → TweetFit → Settings → ' +
+        "enter this server's URL and this code. Expires in " +
+        m + ':' + (s < 10 ? '0' : '') + s + '.';
+      if (!left) {
+        clearInterval(pairTimer);
+        pairTimer = null;
+        show('pair_code', false);
+        hintEl.textContent = PAIR_HINT_IDLE;
+      }
+    }
+    tick();
+    pairTimer = setInterval(tick, 1000);
   }
 
   fetch('/api/config/status').then(function (r) { return r.json(); }).then(function (s) {
@@ -243,14 +278,44 @@ SETUP_HTML = r"""<!DOCTYPE html>
     tokenSource = s.token_source || null;
     updateTokenUI();
     updateSave();
+    updatePairUI();
   }).catch(function () {
     claimed = true;  // fail closed: assume a token is needed
     updateTokenUI();
     updateSave();
+    updatePairUI();
   });
 
   document.getElementById('paste').addEventListener('input', refresh);
-  document.getElementById('token').addEventListener('input', updateSave);
+  document.getElementById('token').addEventListener('input', function () {
+    updateSave();
+    updatePairUI();
+  });
+
+  document.getElementById('pair_btn').addEventListener('click', function () {
+    var token = currentToken();
+    if (!token) return;
+    fetch('/api/pair/new', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function (resp) {
+      return resp.json().then(function (body) { return { resp: resp, body: body }; });
+    }).then(function (r) {
+      if (r.resp.status === 401) {
+        try { localStorage.removeItem('tweetfit_token'); } catch (e) {}
+        savedToken = null;
+        updateTokenUI(); updateSave(); updatePairUI();
+        setMsg("Wrong access token — enter this server's token.", 'err');
+      } else if (!r.resp.ok) {
+        setMsg(r.body.detail || ('Pairing failed: ' + r.resp.status), 'err');
+      } else {
+        setMsg('');
+        showPair(r.body.pair_code, r.body.pair_expires_s || 600);
+      }
+    }).catch(function (e) {
+      setMsg('Network error: ' + e, 'err');
+    });
+  });
 
   document.getElementById('token_show').addEventListener('click', function () {
     tokenShown = !tokenShown;
@@ -291,6 +356,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
         savedToken = null;
         updateTokenUI();
         updateSave();
+        updatePairUI();
         setMsg("Wrong access token — enter this server's token.", 'err');
       } else if (r.resp.status === 503) {
         setMsg(r.body.detail || 'No cookie storage configured on the server.', 'err');
@@ -306,6 +372,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
         claimed = true;
         if (r.body.app_token) tokenSource = 'redis';  // claim minted it
         updateTokenUI();
+        updatePairUI();
         showPair(r.body.pair_code, r.body.pair_expires_s || 600);
         if (r.body.verified) {
           setMsg('✓ Connected as @' + r.body.screen_name +

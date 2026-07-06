@@ -223,6 +223,16 @@ with mock.patch("_common.Client", FakeClient):
         assert r.status_code == 404  # single-use
         print("PASS  pair -> normalizes code, returns token once, then 404")
 
+        # On-demand code minting (wizard's "Get pairing code" button)
+        r = client.post("/api/pair/new")
+        assert r.status_code == 401
+        r = client.post("/api/pair/new", headers=AUTH)
+        b = r.json()
+        assert r.status_code == 200 and len(b["pair_code"]) == 8, b
+        r = client.post("/api/pair", json={"code": b["pair_code"]})
+        assert r.status_code == 200 and r.json()["app_token"] == "test-token"
+        print("PASS  pair/new -> Bearer-gated, mints an exchangeable code")
+
         # Unclaimed server (no Redis token, no env): first save claims it
         kv.clear()
         with mock.patch.dict(os.environ):
