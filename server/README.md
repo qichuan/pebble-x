@@ -1,4 +1,4 @@
-# Peep scraper server
+# TweetFit scraper server
 
 A small **FastAPI** service (deployed on Vercel) that fetches your X timeline and
 likes tweets using [twikit](https://github.com/d60/twikit) (X's internal API — no
@@ -74,16 +74,16 @@ Then ship it:
 vercel --prod
 ```
 
-Note the production URL (e.g. `https://peep-xyz.vercel.app`).
+Note the production URL (e.g. `https://tweetfit-xyz.vercel.app`).
 
 ### 3. Point the watch at it
 
-In the Pebble app → Peep → Settings, enter the production URL and the `APP_TOKEN`.
+In the Pebble app → TweetFit → Settings, enter the production URL and the `APP_TOKEN`.
 
 ## Test
 
 ```sh
-TOKEN=... URL=https://peep-xyz.vercel.app
+TOKEN=... URL=https://tweetfit-xyz.vercel.app
 curl "$URL/api/health"
 curl -H "Authorization: Bearer $TOKEN" "$URL/api/timeline?feed=following"
 curl -X POST -H "Authorization: Bearer $TOKEN" \

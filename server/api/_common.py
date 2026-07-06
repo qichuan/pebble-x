@@ -1,4 +1,4 @@
-"""Shared helpers for the Peep scraper API.
+"""Shared helpers for the TweetFit scraper API.
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 """
@@ -142,7 +142,7 @@ def _validate_media_url(url: str) -> str:
 def _fetch_media(url: str) -> bytes:
     req = urllib.request.Request(
         _validate_media_url(url),
-        headers={"User-Agent": "Peep Pebble image proxy/1.0"},
+        headers={"User-Agent": "TweetFit Pebble image proxy/1.0"},
     )
     with urllib.request.urlopen(req, timeout=12) as resp:
         data = resp.read(MAX_MEDIA_DOWNLOAD_BYTES + 1)

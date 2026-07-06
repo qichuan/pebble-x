@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repo.
 
 ## What this is
 
-**Peep** — a Pebble watchapp that acts as an X (Twitter) client: read the
+**TweetFit** — a Pebble watchapp that acts as an X (Twitter) client: read the
 Following / For You timeline and like tweets. To avoid the paid official X API,
 it talks to a **self-hosted FastAPI server** that scrapes X via `twikit`.
 
@@ -74,9 +74,12 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   `Tweet s_tweets[MAX_TWEETS]` (15). `TEXT_LEN` is 441 bytes; pkjs truncates text
   to `MAX_TEXT_BYTES` (437) on **UTF-8 boundaries** and C re-trims any split
   multibyte tail (`prv_fix_utf8_tail`). Don't send unbounded strings.
-- **Timeline list layout:** row 0 is the feed-toggle button; tweets are rows
-  1..N (`prv_row_to_tweet` = row − 1). A section header shows the current feed.
-  Current feed persists via `persist_write_int(PERSIST_FEED, …)`.
+- **Timeline list layout:** row 0 is a status row showing the current feed
+  (and an animated refresh indicator); SELECT on it opens the feed action
+  overlay (switch feed / refresh). Tweets are rows 1..N (`prv_row_to_tweet`
+  = row − 1). Current feed persists via `persist_write_int(PERSIST_FEED, …)`.
+  The timeline wraps the menu layer's click config so BACK always exits the
+  app — don't subscribe BACK on the timeline window without re-binding it.
 - **twikit is fragile**: it uses X's private GraphQL API and breaks every few
   weeks. Server catches upstream errors and returns `502` with `detail`. Fix =
   `pip install -U twikit`, sometimes a fresh `python login.py`. Known breakages

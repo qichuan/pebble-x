@@ -1,4 +1,4 @@
-/* Peep - X (Twitter) client for Pebble.
+/* TweetFit - X (Twitter) client for Pebble.
  * Talks to a self-hosted scraper server (see /server) over authenticated HTTPS.
  * No official X API, no OAuth - the phone just forwards to our server.
  */
@@ -343,7 +343,7 @@ function deliverTimeline(forceFetch, feed) {
 // ---- Pebble events ----
 
 Pebble.addEventListener('ready', function () {
-  console.log('Peep pkjs ready, configured: ' + serverConfigured());
+  console.log('TweetFit pkjs ready, configured: ' + serverConfigured());
 });
 
 Pebble.addEventListener('appmessage', function (e) {

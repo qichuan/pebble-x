@@ -1,4 +1,4 @@
-"""Peep scraper REST API (FastAPI).
+"""TweetFit scraper REST API (FastAPI).
 
 The Pebble app reaches these endpoints over the internet:
     GET  /api/timeline?feed=following|foryou   -> { feed, tweets: [...] }
@@ -22,7 +22,7 @@ from _common import media_urls, make_client, render_media_for_watch, tweet_to_di
 
 MAX_TWEETS = 15
 
-app = FastAPI(title="Peep", docs_url=None, redoc_url=None)
+app = FastAPI(title="TweetFit", docs_url=None, redoc_url=None)
 
 
 def require_token(authorization: str = Header(default="")) -> None:

@@ -1,4 +1,4 @@
-"""One-off local setup for Peep. NOT deployed to Vercel.
+"""One-off local setup for TweetFit. NOT deployed to Vercel.
 
 X now blocks automated username/password login behind Cloudflare, so instead of
 logging in programmatically we reuse the session from a browser where you're
@@ -26,7 +26,7 @@ import secrets
 
 
 def main():
-    print("Peep setup — reuse your browser's x.com session (no password needed)\n")
+    print("TweetFit setup — reuse your browser's x.com session (no password needed)\n")
     auth_token = getpass.getpass("x.com cookie 'auth_token': ").strip()
     ct0 = input("x.com cookie 'ct0': ").strip()
 

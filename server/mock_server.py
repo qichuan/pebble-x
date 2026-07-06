@@ -80,7 +80,7 @@ def fake_render_media_for_watch(media_url, width, height, color, heap=0):
     draw.rectangle((0, 0, size[0] - 1, size[1] - 1), outline=(0, 85, 170), width=4)
     draw.rectangle((12, 12, size[0] - 13, size[1] // 2), fill=(255, 85, 0))
     draw.ellipse((size[0] // 3, size[1] // 3, size[0] - 18, size[1] - 18), fill=(0, 170, 85))
-    draw.text((18, size[1] - 34), "Peep photo", fill=(0, 0, 0))
+    draw.text((18, size[1] - 34), "TweetFit photo", fill=(0, 0, 0))
     if color:
         output = image.quantize(colors=16, dither=Image.Dither.FLOYDSTEINBERG)
     else:
@@ -98,5 +98,5 @@ def fake_render_media_for_watch(media_url, width, height, color, heap=0):
 
 index.render_media_for_watch = fake_render_media_for_watch
 
-print("Mock Peep server on http://127.0.0.1:%d (token: test-token)" % port, flush=True)
+print("Mock TweetFit server on http://127.0.0.1:%d (token: test-token)" % port, flush=True)
 uvicorn.run(index.app, host="127.0.0.1", port=port, log_level="info")

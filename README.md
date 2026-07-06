@@ -1,8 +1,8 @@
-# Peep — an X (Twitter) client for Pebble
+# TweetFit — an X (Twitter) client for Pebble
 
 Read your X timeline (Following and For You) and like tweets from your wrist.
 
-The official X API is now pay-per-use and too expensive for a hobby app, so Peep
+The official X API is now pay-per-use and too expensive for a hobby app, so TweetFit
 instead talks to a small **self-hosted scraper server** that uses
 [twikit](https://github.com/d60/twikit) (X's internal API — no API key, no fees).
 The watch and the Pebble phone app never touch X directly; they only call your
@@ -22,10 +22,12 @@ Watch (C)  ──AppMessage──▶  Pebble phone app (pkjs)  ──HTTPS+Beare
  detail actions                                                         /api/like, /api/retweet
 ```
 
-- **Watch**: a timeline list with a **feed toggle** at the top (Following ⇄ For
-  You) and a section header showing the current feed. SELECT opens a tweet;
-  SELECT in the detail opens an action menu for retweet, like, and images. Long-press
-  SELECT refreshes from the timeline.
+- **Watch**: a timeline list with a **status row** at the top showing the
+  current feed (Following / For You), with an animated indicator while a
+  refresh is in flight. SELECT on the status row opens a feed action menu
+  (switch feed, refresh); SELECT on a tweet opens it, and SELECT in the detail
+  opens an action menu for retweet, like, and images. Long-press SELECT
+  refreshes from the timeline.
 - **pkjs** (inside the Pebble phone app): calls your server, caches each feed so
   reopening the app is instant/free, and bridges to the watch over AppMessage.
 - **Server** (`server/`): fetches the timeline, posts likes, and renders photos
@@ -61,7 +63,7 @@ contains all photo URLs. Errors: `401` (bad/missing token), `422` (bad body),
 Follow [`server/README.md`](server/README.md): run `python login.py` once on your
 own machine to mint an X session cookie and an access token, deploy to Vercel, and
 set the `X_COOKIES` + `APP_TOKEN` environment variables. You'll get a URL like
-`https://peep-xyz.vercel.app`.
+`https://tweetfit-xyz.vercel.app`.
 
 ### 2. Enable GitHub Pages (settings page)
 
@@ -79,7 +81,7 @@ pebble install --phone <phone-ip>     # or --emulator basalt
 
 ### 4. Configure
 
-Open the Pebble phone app → Peep → Settings. Enter your **server URL** and the
+Open the Pebble phone app → TweetFit → Settings. Enter your **server URL** and the
 **access token** (`APP_TOKEN`), then Save. The watch loads your timeline.
 
 ## Watch controls
@@ -87,9 +89,13 @@ Open the Pebble phone app → Peep → Settings. Enter your **server URL** and t
 | Screen   | Button            | Action                          |
 |----------|-------------------|---------------------------------|
 | Timeline | UP / DOWN         | scroll                          |
-| Timeline | SELECT on top row | switch feed (Following ⇄ For You)|
+| Timeline | SELECT on top row | open feed actions               |
 | Timeline | SELECT on a tweet | open it                         |
 | Timeline | long-press SELECT | refresh                         |
+| Timeline | BACK              | exit the app                    |
+| Feed actions | UP            | switch feed (Following ⇄ For You)|
+| Feed actions | SELECT        | refresh                         |
+| Feed actions | BACK          | close                           |
 | Detail   | UP / DOWN         | scroll text                     |
 | Detail   | SELECT            | open action menu                |
 | Actions  | UP                | retweet                         |
