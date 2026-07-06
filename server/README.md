@@ -82,9 +82,18 @@ fresh cookies — **no redeploy needed**.
 
 ### 4. Pair the watch
 
-Pebble app → TweetFit → Settings: enter the server URL and the **pairing code**
-from the wizard — the page fetches the access token for you. (A token can also
-be pasted manually as a fallback.)
+Pebble app → TweetFit → Settings: enter the server URL and, in the single
+secret field, the **pairing code** from the wizard — the page exchanges it for
+the access token behind the scenes. (Pasting a full access token into the same
+field also works; the wizard can reveal it via the Show/Copy buttons.)
+
+### Migrating from the env-var setup
+
+If your project still has `APP_TOKEN`/`X_COOKIES` env vars from the old manual
+flow, everything keeps working — the wizard will ask for your `APP_TOKEN` value
+(it can't read env vars) and remember it in that browser. To switch fully to
+server-managed secrets: delete both env vars in Vercel, redeploy, reload
+`/setup` — the next save claims the server and mints a fresh token.
 
 ### Manual fallback (no Upstash)
 

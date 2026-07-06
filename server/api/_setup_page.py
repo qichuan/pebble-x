@@ -54,6 +54,14 @@ SETUP_HTML = r"""<!DOCTYPE html>
     font-size: 28px; font-weight: 700; letter-spacing: 3px; text-align: center;
     padding: 10px 0 4px;
   }
+  .tokenval {
+    color: #000; font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 14px; word-break: break-all; padding: 2px 0 6px;
+  }
+  .minibtn {
+    width: auto; display: inline-block; padding: 6px 14px; font-size: 13px;
+    font-weight: 600; margin: 0 8px 0 0; background: #e8e8e8; color: #000;
+  }
   .ok { color: #15803d; }
   .warn { color: #b45309; }
   .err { color: #b91c1c; }
@@ -86,9 +94,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
       <label for="token">Access token</label>
       <input id="token" placeholder="this server's access token"
              autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <p class="hint">This server is already claimed and this browser doesn't know its
-        token. Enter it, or reset by deleting the <b>tweetfit:app_token</b> key in the
-        Upstash console and reloading this page.</p>
+      <p class="hint" id="token_hint"></p>
     </div>
 
     <label for="paste">Copied from x.com</label>
@@ -106,6 +112,15 @@ SETUP_HTML = r"""<!DOCTYPE html>
       enter this server's URL and this code. Expires in <span id="pair_ttl">10:00</span>;
       re-save here for a fresh one.</p>
   </div>
+
+  <div class="card" id="token_card" style="display:none">
+    <label>Access token</label>
+    <div class="tokenval" id="token_val"></div>
+    <button class="minibtn" id="token_show">Show</button>
+    <button class="minibtn" id="token_copy">Copy</button>
+    <p class="hint" style="margin-top:10px">The watch's credential &mdash; a pairing code
+      just delivers it. Kept in this browser for future cookie refreshes.</p>
+  </div>
   <div id="msg"></div>
 
 <script>
@@ -114,10 +129,19 @@ SETUP_HTML = r"""<!DOCTYPE html>
   var CT0_RE = /\bct0=([0-9A-Fa-f]{16,200})\b/;
   var HEX_RE = /\b[0-9A-Fa-f]{16,200}\b/g;
   var cookies = null;
-  var claimed = null;  // null until /api/config/status answers
+  var claimed = null;       // null until /api/config/status answers
+  var tokenSource = null;   // "redis" | "env" | null (from status)
   var savedToken = null;
+  var tokenShown = false;
   var pairTimer = null;
   try { savedToken = localStorage.getItem('tweetfit_token'); } catch (e) {}
+
+  var HINT_ENV = "This server's access token is the APP_TOKEN env var you set when " +
+    "deploying — enter that value. To let this wizard generate and manage the token " +
+    "instead, delete the env var in Vercel, redeploy, and reload this page.";
+  var HINT_OTHER_BROWSER = "This server was set up from another browser. Enter its " +
+    "access token, or reset by deleting the tweetfit:app_token key in the Upstash " +
+    "console and reloading this page.";
 
   function mask(v) {
     return v.slice(0, 6) + '… (' + v.length + ' chars)';
@@ -159,6 +183,24 @@ SETUP_HTML = r"""<!DOCTYPE html>
     return typed || savedToken || '';
   }
 
+  function renderTokenValue() {
+    document.getElementById('token_val').textContent = !savedToken ? '' :
+      (tokenShown ? savedToken : savedToken.slice(0, 6) + '••••••••••');
+    document.getElementById('token_show').textContent = tokenShown ? 'Hide' : 'Show';
+  }
+
+  function updateTokenUI() {
+    show('claim_note', claimed === false);
+    show('token_card', !!savedToken);
+    renderTokenValue();
+    var needInput = claimed === true && !savedToken;
+    show('token_row', needInput);
+    if (needInput) {
+      document.getElementById('token_hint').textContent =
+        tokenSource === 'env' ? HINT_ENV : HINT_OTHER_BROWSER;
+    }
+  }
+
   function updateSave() {
     var needToken = claimed === true && !currentToken();
     document.getElementById('save').disabled = !cookies || needToken;
@@ -198,17 +240,34 @@ SETUP_HTML = r"""<!DOCTYPE html>
 
   fetch('/api/config/status').then(function (r) { return r.json(); }).then(function (s) {
     claimed = !!s.claimed;
-    show('claim_note', !claimed);
-    show('token_row', claimed && !savedToken);
+    tokenSource = s.token_source || null;
+    updateTokenUI();
     updateSave();
   }).catch(function () {
     claimed = true;  // fail closed: assume a token is needed
-    show('token_row', !savedToken);
+    updateTokenUI();
     updateSave();
   });
 
   document.getElementById('paste').addEventListener('input', refresh);
   document.getElementById('token').addEventListener('input', updateSave);
+
+  document.getElementById('token_show').addEventListener('click', function () {
+    tokenShown = !tokenShown;
+    renderTokenValue();
+  });
+
+  document.getElementById('token_copy').addEventListener('click', function () {
+    if (!savedToken) return;
+    var btn = document.getElementById('token_copy');
+    navigator.clipboard.writeText(savedToken).then(function () {
+      btn.textContent = 'Copied!';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    }).catch(function () {
+      tokenShown = true;
+      renderTokenValue();  // clipboard blocked — reveal so it can be copied by hand
+    });
+  });
 
   document.getElementById('save').addEventListener('click', function () {
     if (!cookies) return;
@@ -230,7 +289,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
       if (r.resp.status === 401) {
         try { localStorage.removeItem('tweetfit_token'); } catch (e) {}
         savedToken = null;
-        show('token_row', true);
+        updateTokenUI();
         updateSave();
         setMsg("Wrong access token — enter this server's token.", 'err');
       } else if (r.resp.status === 503) {
@@ -245,8 +304,8 @@ SETUP_HTML = r"""<!DOCTYPE html>
           try { localStorage.setItem('tweetfit_token', keep); } catch (e) {}
         }
         claimed = true;
-        show('claim_note', false);
-        show('token_row', false);
+        if (r.body.app_token) tokenSource = 'redis';  // claim minted it
+        updateTokenUI();
         showPair(r.body.pair_code, r.body.pair_expires_s || 600);
         if (r.body.verified) {
           setMsg('✓ Connected as @' + r.body.screen_name +

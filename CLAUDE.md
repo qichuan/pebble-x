@@ -98,9 +98,13 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
 - **Access token**: minted by the server on the wizard's first save
   ("claiming"; `secrets.token_urlsafe`, key `tweetfit:app_token`) and handed to
   the watch via a one-time 10-minute pairing code (`tweetfit:pair`,
-  `POST /api/pair`, exchanged by the settings page over CORS). `expected_token()`
-  in `index.py` reads Redis first, `APP_TOKEN` env as legacy fallback.
-  `GET /api/config/status` is deliberately unauthenticated but boolean-only.
+  `POST /api/pair`, exchanged by the settings page over CORS — its single
+  secret field auto-detects: 8 chars of the code alphabet = pairing code,
+  anything else = full token). `expected_token()` in `index.py` reads Redis
+  first, `APP_TOKEN` env as legacy fallback; `/api/config/status` reports the
+  provenance as `token_source` so the wizard can explain env-claimed servers.
+  `GET /api/config/status` is deliberately unauthenticated but boolean/
+  provenance-only.
   An unclaimed server is claimable by the first visitor — reset by deleting
   `tweetfit:app_token` in Upstash. `server/login.py` is the legacy manual path.
 - **Cost discipline**: the watch never auto-polls. It shows cached tweets on

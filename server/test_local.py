@@ -174,7 +174,10 @@ with mock.patch("_common.Client", FakeClient):
     print("PASS  config without storage -> 503 with Upstash hint")
 
     r = client.get("/api/config/status")
-    assert r.json() == {"claimed": True, "storage": False, "cookies": True, "source": "env"}, r.json()
+    assert r.json() == {
+        "claimed": True, "storage": False, "cookies": True,
+        "source": "env", "token_source": "env",
+    }, r.json()
     print("PASS  status (no auth) -> claimed via env, env cookies")
 
     kv = {}
@@ -206,8 +209,11 @@ with mock.patch("_common.Client", FakeClient):
         print("PASS  config -> stored cookies, verified @janedev, pairing code minted")
 
         r = client.get("/api/config/status")
-        assert r.json() == {"claimed": True, "storage": True, "cookies": True, "source": "redis"}
-        print("PASS  status -> redis cookie source")
+        assert r.json() == {
+            "claimed": True, "storage": True, "cookies": True,
+            "source": "redis", "token_source": "env",
+        }, r.json()
+        print("PASS  status -> redis cookies, env token")
 
         r = client.post("/api/pair", json={"code": "NOPE-NOPE"})
         assert r.status_code == 404
@@ -221,6 +227,8 @@ with mock.patch("_common.Client", FakeClient):
         kv.clear()
         with mock.patch.dict(os.environ):
             del os.environ["APP_TOKEN"]
+            r = client.get("/api/config/status")
+            assert r.json()["claimed"] is False and r.json()["token_source"] is None
             r = client.get("/api/timeline?feed=following", headers=AUTH)
             assert r.status_code == 401  # nothing to authenticate against
             r = client.post("/api/config", json=good_cookies)  # no auth header
@@ -228,7 +236,9 @@ with mock.patch("_common.Client", FakeClient):
             assert r.status_code == 200 and b["claimed"] is True and b["verified"], b
             minted = b["app_token"]
             assert minted and kv[_storage.TOKEN_KEY] == minted
-            print("PASS  unclaimed server -> first save claims, mints token")
+            r = client.get("/api/config/status")
+            assert r.json()["claimed"] is True and r.json()["token_source"] == "redis"
+            print("PASS  unclaimed server -> first save claims, mints token (redis)")
 
             r = client.post("/api/config", json=good_cookies)
             assert r.status_code == 401
@@ -248,7 +258,10 @@ with mock.patch("_common.Client", FakeClient):
         print("PASS  timeline unconfigured -> 502 pointing at /setup")
 
         r = client.get("/api/config/status")
-        assert r.json() == {"claimed": True, "storage": False, "cookies": False, "source": None}
+        assert r.json() == {
+            "claimed": True, "storage": False, "cookies": False,
+            "source": None, "token_source": "env",
+        }, r.json()
         print("PASS  status without cookies -> cookies false")
 
 # Regression for the 2026-07 X payload change: real twikit (no network) must

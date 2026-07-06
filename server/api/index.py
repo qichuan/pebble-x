@@ -168,17 +168,24 @@ async def pair(body: PairBody) -> dict:
 @app.get("/api/config/status")
 async def config_status() -> dict:
     # Unauthenticated by design: the wizard needs the claimed/storage state
-    # before it has a token. Booleans only — no secret material.
+    # before it has a token. Booleans/provenance only — no secret material.
     try:
         _, source = load_cookies()
         cookies_ok = True
     except Exception:
         cookies_ok, source = False, None
+    if _storage.kv_get(_storage.TOKEN_KEY):
+        token_source = "redis"
+    elif os.environ.get("APP_TOKEN"):
+        token_source = "env"
+    else:
+        token_source = None
     return {
-        "claimed": expected_token() is not None,
+        "claimed": token_source is not None,
         "storage": _storage.storage_configured(),
         "cookies": cookies_ok,
         "source": source,
+        "token_source": token_source,
     }
 
 

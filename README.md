@@ -84,8 +84,8 @@ pebble install --phone <phone-ip>     # or --emulator basalt
 ### 4. Configure
 
 Open the Pebble phone app → TweetFit → Settings. Enter your **server URL** and
-the **pairing code** from the setup wizard (or paste an access token manually),
-then Save. The watch loads your timeline.
+the **pairing code** from the setup wizard (the single secret field also
+accepts a full access token), then Save. The watch loads your timeline.
 
 ## Watch controls
 

@@ -47,17 +47,12 @@
            inputmode="url">
     <p class="hint">The address of your TweetFit scraper server (see the <b>server/</b> folder).</p>
 
-    <label for="pair_code">Pairing code</label>
-    <input id="pair_code" placeholder="e.g. KX7Q-M2FP"
+    <label for="secret">Pairing code or access token</label>
+    <input id="secret" placeholder="e.g. KX7Q-M2FP"
            autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
-    <p class="hint">Shown by your server's <b>/setup</b> page after you connect your
-      X account. Fetches the access token for you.</p>
-
-    <label for="token">Access token (manual)</label>
-    <input id="token" placeholder="or paste the token directly"
-           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <p class="hint">Only needed if you're not using a pairing code. Leave both blank to
-      keep the current token.</p>
+    <p class="hint">Get a pairing code from your server's <b>/setup</b> page — it fetches
+      the access token for you. Pasting a full access token also works. Leave blank to
+      keep the current one.</p>
 
     <button id="save" class="primary">Save</button>
   </div>
@@ -77,7 +72,7 @@
   var returnTo = qs('return_to') || 'pebblejs://close#';
   document.getElementById('server_url').value = qs('server_url') || '';
   if (qs('has_token') === '1') {
-    document.getElementById('token').placeholder = '•••••• (unchanged)';
+    document.getElementById('secret').placeholder = '•••••• (unchanged)';
   }
 
   function finish(serverUrl, token) {
@@ -111,15 +106,18 @@
 
   document.getElementById('save').addEventListener('click', function () {
     var serverUrl = document.getElementById('server_url').value.trim();
-    var code = document.getElementById('pair_code').value.trim();
-    var token = document.getElementById('token').value.trim();
+    var secret = document.getElementById('secret').value.trim();
     if (!serverUrl) { setMsg('Enter your server URL.', 'warn'); return; }
     if (!/^https?:\/\//.test(serverUrl)) { setMsg('URL must start with https://', 'warn'); return; }
     setMsg('Saving…');
-    if (code) {
-      exchangeCode(serverUrl, code, function (fetched) { finish(serverUrl, fetched); });
+    // One field for both: 8 chars from the pairing-code alphabet (dashes,
+    // spaces, and case ignored) is a code to exchange; anything else is a
+    // full access token; blank keeps the current token.
+    var asCode = secret.toUpperCase().replace(/[\s-]/g, '');
+    if (/^[A-Z2-9]{8}$/.test(asCode)) {
+      exchangeCode(serverUrl, asCode, function (fetched) { finish(serverUrl, fetched); });
     } else {
-      finish(serverUrl, token);
+      finish(serverUrl, secret);
     }
   });
 })();
