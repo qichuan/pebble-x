@@ -40,7 +40,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
     border: 1px solid #ccc; border-radius: 8px; font-family: inherit;
   }
   textarea { height: 110px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; resize: vertical; }
-  .hint { font-size: 12px; color: #777; margin: 6px 0 16px; }
+  .hint { font-size: 12px; color: #000; margin: 6px 0 16px; }
   button {
     width: 100%; padding: 12px; font-size: 16px; font-weight: 600;
     border: 0; border-radius: 8px; cursor: pointer; margin-top: 8px;
