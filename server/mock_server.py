@@ -31,7 +31,15 @@ class FakeTweet:
         )
         self.created_at = "Mon Jul 06 08:%02d:00 +0000 2026" % (i % 60)
         self.favorited = False
-        self.media = [{"media_url_https": "https://pbs.twimg.com/media/mock-%d.png" % i}] if media else []
+        self.media = (
+            [
+                {"media_url_https": "https://pbs.twimg.com/media/mock-%d-0.png" % i},
+                {"media_url_https": "https://pbs.twimg.com/media/mock-%d-1.png" % i},
+                {"media_url_https": "https://pbs.twimg.com/media/mock-%d-2.png" % i},
+            ]
+            if media
+            else []
+        )
 
 
 class FakeClient:
@@ -52,6 +60,10 @@ class FakeClient:
 
     async def favorite_tweet(self, tid):
         print("LIKED tweet", tid, flush=True)
+        return True
+
+    async def retweet(self, tid):
+        print("RETWEETED tweet", tid, flush=True)
         return True
 
 

@@ -34,16 +34,13 @@
 // Closest Pebble 64-color match to X/Twitter blue #1DA1F2; black on B&W.
 #define ACCENT_COLOR PBL_IF_COLOR_ELSE(GColorVividCerulean, GColorBlack)
 
-// U+2764 heavy black heart — in Pebble's emoji set for regular (not bold) Gothic fonts.
-#define HEART "\xE2\x9D\xA4"
-#define HEART_COLOR PBL_IF_COLOR_ELSE(GColorRed, GColorBlack)
-
 typedef struct {
   char author[AUTHOR_LEN];
   char text[TEXT_LEN];
   char time_ago[TIME_LEN];
   bool liked;
   bool has_media;
+  int media_count;
 } Tweet;
 
 static Tweet s_tweets[MAX_TWEETS];
@@ -67,13 +64,19 @@ static Window *s_detail_window;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_detail_header_layer;
 static TextLayer *s_detail_body_layer;
-static Layer *s_detail_footer_layer;  // custom-drawn: heart glyph is red, text isn't
-static const char *s_footer_pre;
-static bool s_footer_heart;
-static const char *s_footer_post;
-static bool s_detail_open = false;
 static int s_detail_index = -1;
 static char s_detail_header[AUTHOR_LEN + TIME_LEN + 8];
+
+static Window *s_action_window;
+static TextLayer *s_action_header_layer;
+static TextLayer *s_action_up_layer;
+static TextLayer *s_action_select_layer;
+static TextLayer *s_action_down_layer;
+static TextLayer *s_action_status_layer;
+static bool s_action_open = false;
+static int s_action_index = -1;
+static char s_action_header[AUTHOR_LEN + 16];
+static char s_action_status[40];
 
 static Window *s_image_window;
 static BitmapLayer *s_image_bitmap_layer;
@@ -84,10 +87,13 @@ static uint8_t *s_image_png_data;
 static int s_image_expected_bytes = 0;
 static int s_image_received_bytes = 0;
 static bool s_image_open = false;
-static int s_image_index = -1;
+static int s_image_tweet_index = -1;
+static int s_image_media_index = 0;
+static int s_image_media_count = 0;
 static int s_image_request_id = 0;
 
 static void prv_send_cmd(int cmd);
+static void prv_show_action(int index);
 static void prv_show_image(int index);
 
 // Trim a truncated UTF-8 string so it doesn't end mid-sequence
@@ -112,83 +118,14 @@ static void prv_set_status(const char *text) {
 
 // ---- Detail window ----
 
-static void prv_set_footer(const char *pre, bool heart, const char *post) {
-  s_footer_pre = pre;
-  s_footer_heart = heart;
-  s_footer_post = post;
-  if (s_detail_footer_layer) {
-    layer_mark_dirty(s_detail_footer_layer);
-  }
-}
-
-static void prv_footer_update_proc(Layer *layer, GContext *ctx) {
-  GRect bounds = layer_get_bounds(layer);
-  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-  const GColor text_color = PBL_IF_COLOR_ELSE(GColorDarkGray, GColorBlack);
-  int x = 0;
-  const char *parts[] = { s_footer_pre, s_footer_heart ? HEART : NULL, s_footer_post };
-  for (int i = 0; i < 3; i++) {
-    if (!parts[i]) {
-      continue;
-    }
-    graphics_context_set_text_color(ctx, i == 1 ? HEART_COLOR : text_color);
-    graphics_draw_text(ctx, parts[i], font, GRect(x, -2, bounds.size.w - x, bounds.size.h),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    x += graphics_text_layout_get_content_size(parts[i], font, GRect(0, 0, bounds.size.w, 24),
-                                               GTextOverflowModeTrailingEllipsis,
-                                               GTextAlignmentLeft).w;
-  }
-}
-
-static void prv_update_detail_footer(void) {
-  if (!s_detail_open || s_detail_index < 0) {
-    return;
-  }
-  Tweet *t = &s_tweets[s_detail_index];
-  if (t->liked) {
-    prv_set_footer(t->has_media ? "DOWN photo | " : NULL, true, " Liked");
-  } else if (t->has_media) {
-    prv_set_footer("DOWN photo | SELECT to ", true, NULL);
-  } else {
-    prv_set_footer("SELECT to ", true, NULL);
-  }
-}
-
 static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_detail_index < 0 || s_tweets[s_detail_index].liked) {
-    return;
+  if (s_detail_index >= 0) {
+    prv_show_action(s_detail_index);
   }
-  DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
-    dict_write_int32(iter, MESSAGE_KEY_LIKE_INDEX, s_detail_index);
-    app_message_outbox_send();
-    prv_set_footer("Liking...", false, NULL);
-  }
-}
-
-static bool prv_detail_is_at_bottom(void) {
-  if (!s_scroll_layer) {
-    return false;
-  }
-  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
-  GSize content_size = scroll_layer_get_content_size(s_scroll_layer);
-  GRect frame = layer_get_frame(scroll_layer_get_layer(s_scroll_layer));
-  int max_scroll = content_size.h - frame.size.h;
-  return max_scroll <= 0 || -offset.y >= max_scroll - 2;
-}
-
-static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_detail_index >= 0 && s_tweets[s_detail_index].has_media &&
-      prv_detail_is_at_bottom() && !click_recognizer_is_repeating(recognizer)) {
-    prv_show_image(s_detail_index);
-    return;
-  }
-  scroll_layer_scroll_down_click_handler(recognizer, s_scroll_layer);
 }
 
 static void prv_detail_click_config(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
-  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, prv_detail_down_handler);
 }
 
 static void prv_detail_window_load(Window *window) {
@@ -221,24 +158,14 @@ static void prv_detail_window_load(Window *window) {
   text_layer_set_text(s_detail_body_layer, t->text);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_body_layer));
 
-  const int footer_y = 28 + body_size.h + 12;
-  s_detail_footer_layer = layer_create(GRect(margin, footer_y, width, 24));
-  layer_set_update_proc(s_detail_footer_layer, prv_footer_update_proc);
-  scroll_layer_add_child(s_scroll_layer, s_detail_footer_layer);
-
-  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, footer_y + 32));
+  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, 28 + body_size.h + 16));
   layer_add_child(window_layer, scroll_layer_get_layer(s_scroll_layer));
 
-  s_detail_open = true;
-  prv_update_detail_footer();
 }
 
 static void prv_detail_window_unload(Window *window) {
-  s_detail_open = false;
   text_layer_destroy(s_detail_header_layer);
   text_layer_destroy(s_detail_body_layer);
-  layer_destroy(s_detail_footer_layer);
-  s_detail_footer_layer = NULL;
   scroll_layer_destroy(s_scroll_layer);
   window_destroy(window);
   s_detail_window = NULL;
@@ -252,6 +179,181 @@ static void prv_show_detail(int index) {
     .unload = prv_detail_window_unload,
   });
   window_stack_push(s_detail_window, true);
+}
+
+// ---- Action window ----
+
+static bool prv_action_has_images(void) {
+  return PBL_IF_COLOR_ELSE(
+      s_action_index >= 0 && s_action_index < s_tweet_count &&
+      s_tweets[s_action_index].media_count > 0,
+      false);
+}
+
+static void prv_action_set_status(const char *text) {
+  snprintf(s_action_status, sizeof(s_action_status), "%s", text ? text : "");
+  if (s_action_status_layer) {
+    text_layer_set_text(s_action_status_layer, s_action_status);
+    layer_set_hidden(text_layer_get_layer(s_action_status_layer), s_action_status[0] == '\0');
+  }
+}
+
+static void prv_action_set_labels(void) {
+  if (s_action_index < 0 || s_action_index >= s_tweet_count) {
+    return;
+  }
+  Tweet *t = &s_tweets[s_action_index];
+  if (s_action_up_layer) {
+    text_layer_set_text(s_action_up_layer, "UP Retweet");
+  }
+  if (s_action_select_layer) {
+    text_layer_set_text(s_action_select_layer, t->liked ? "SELECT Liked" : "SELECT Like");
+  }
+  if (s_action_down_layer) {
+    if (prv_action_has_images()) {
+      static char image_label[24];
+      if (t->media_count > 1) {
+        snprintf(image_label, sizeof(image_label), "DOWN Images %d", t->media_count);
+      } else {
+        snprintf(image_label, sizeof(image_label), "DOWN Image");
+      }
+      text_layer_set_text(s_action_down_layer, image_label);
+      layer_set_hidden(text_layer_get_layer(s_action_down_layer), false);
+    } else {
+      text_layer_set_text(s_action_down_layer, "");
+      layer_set_hidden(text_layer_get_layer(s_action_down_layer), true);
+    }
+  }
+}
+
+static bool prv_send_index_message(uint32_t key, int index) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
+    return false;
+  }
+  dict_write_int32(iter, key, index);
+  app_message_outbox_send();
+  return true;
+}
+
+static void prv_action_up_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_action_index < 0 || s_action_index >= s_tweet_count) {
+    return;
+  }
+  if (prv_send_index_message(MESSAGE_KEY_RETWEET_INDEX, s_action_index)) {
+    prv_action_set_status("Retweeting...");
+  } else {
+    prv_action_set_status("Phone busy.");
+  }
+}
+
+static void prv_action_select_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_action_index < 0 || s_action_index >= s_tweet_count) {
+    return;
+  }
+  if (s_tweets[s_action_index].liked) {
+    prv_action_set_status("Already liked.");
+    return;
+  }
+  if (prv_send_index_message(MESSAGE_KEY_LIKE_INDEX, s_action_index)) {
+    prv_action_set_status("Liking...");
+  } else {
+    prv_action_set_status("Phone busy.");
+  }
+}
+
+static void prv_action_down_handler(ClickRecognizerRef recognizer, void *context) {
+  if (prv_action_has_images()) {
+    prv_show_image(s_action_index);
+  }
+}
+
+static void prv_action_click_config(void *context) {
+  window_single_click_subscribe(BUTTON_ID_UP, prv_action_up_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_action_select_handler);
+  if (prv_action_has_images()) {
+    window_single_click_subscribe(BUTTON_ID_DOWN, prv_action_down_handler);
+  }
+}
+
+static void prv_style_action_text(TextLayer *layer, GFont font, GColor color,
+                                  GTextAlignment align) {
+  text_layer_set_background_color(layer, GColorClear);
+  text_layer_set_text_color(layer, color);
+  text_layer_set_font(layer, font);
+  text_layer_set_text_alignment(layer, align);
+  text_layer_set_overflow_mode(layer, GTextOverflowModeTrailingEllipsis);
+}
+
+static void prv_action_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  const int margin = PBL_IF_ROUND_ELSE(18, 8);
+  const int width = bounds.size.w - margin * 2;
+
+  s_action_open = true;
+  Tweet *t = &s_tweets[s_action_index];
+  snprintf(s_action_header, sizeof(s_action_header), "@%s", t->author);
+
+  s_action_header_layer = text_layer_create(GRect(margin, 4, width, 24));
+  prv_style_action_text(s_action_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                        ACCENT_COLOR, GTextAlignmentCenter);
+  text_layer_set_text(s_action_header_layer, s_action_header);
+  layer_add_child(window_layer, text_layer_get_layer(s_action_header_layer));
+
+  s_action_up_layer = text_layer_create(GRect(margin, 34, width, 28));
+  prv_style_action_text(s_action_up_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                        GColorBlack, GTextAlignmentCenter);
+  layer_add_child(window_layer, text_layer_get_layer(s_action_up_layer));
+
+  s_action_select_layer = text_layer_create(GRect(margin, 66, width, 28));
+  prv_style_action_text(s_action_select_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                        GColorBlack, GTextAlignmentCenter);
+  layer_add_child(window_layer, text_layer_get_layer(s_action_select_layer));
+
+  s_action_down_layer = text_layer_create(GRect(margin, 98, width, 28));
+  prv_style_action_text(s_action_down_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                        GColorBlack, GTextAlignmentCenter);
+  layer_add_child(window_layer, text_layer_get_layer(s_action_down_layer));
+
+  s_action_status_layer = text_layer_create(GRect(margin, bounds.size.h - 30, width, 24));
+  prv_style_action_text(s_action_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                        PBL_IF_COLOR_ELSE(GColorDarkGray, GColorBlack), GTextAlignmentCenter);
+  layer_add_child(window_layer, text_layer_get_layer(s_action_status_layer));
+
+  prv_action_set_labels();
+  prv_action_set_status("");
+}
+
+static void prv_action_window_unload(Window *window) {
+  s_action_open = false;
+  text_layer_destroy(s_action_header_layer);
+  s_action_header_layer = NULL;
+  text_layer_destroy(s_action_up_layer);
+  s_action_up_layer = NULL;
+  text_layer_destroy(s_action_select_layer);
+  s_action_select_layer = NULL;
+  text_layer_destroy(s_action_down_layer);
+  s_action_down_layer = NULL;
+  text_layer_destroy(s_action_status_layer);
+  s_action_status_layer = NULL;
+  s_action_index = -1;
+  window_destroy(window);
+  s_action_window = NULL;
+}
+
+static void prv_show_action(int index) {
+  if (s_action_window || index < 0 || index >= s_tweet_count) {
+    return;
+  }
+  s_action_index = index;
+  s_action_window = window_create();
+  window_set_window_handlers(s_action_window, (WindowHandlers) {
+    .load = prv_action_window_load,
+    .unload = prv_action_window_unload,
+  });
+  window_set_click_config_provider(s_action_window, prv_action_click_config);
+  window_stack_push(s_action_window, true);
 }
 
 // ---- Image window ----
@@ -286,14 +388,26 @@ static void prv_set_image_status(const char *text) {
   }
 }
 
-static bool prv_send_image_cmd(int index, GSize size) {
+static void prv_set_image_progress_status(const char *line) {
+  char text[64];
+  if (s_image_media_count > 1) {
+    snprintf(text, sizeof(text), "Photo %d/%d\n%s", s_image_media_index + 1,
+             s_image_media_count, line);
+  } else {
+    snprintf(text, sizeof(text), "%s", line);
+  }
+  prv_set_image_status(text);
+}
+
+static bool prv_send_image_cmd(GSize size) {
   DictionaryIterator *iter;
   if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
     return false;
   }
   dict_write_int32(iter, MESSAGE_KEY_CMD, CMD_IMAGE);
   dict_write_int32(iter, MESSAGE_KEY_FEED, s_feed);
-  dict_write_int32(iter, MESSAGE_KEY_TWEET_INDEX, index);
+  dict_write_int32(iter, MESSAGE_KEY_TWEET_INDEX, s_image_tweet_index);
+  dict_write_int32(iter, MESSAGE_KEY_IMAGE_INDEX, s_image_media_index);
   dict_write_int32(iter, MESSAGE_KEY_IMAGE_W, size.w);
   dict_write_int32(iter, MESSAGE_KEY_IMAGE_H, size.h);
   dict_write_int32(iter, MESSAGE_KEY_IMAGE_COLOR, PBL_IF_COLOR_ELSE(1, 0));
@@ -301,6 +415,41 @@ static bool prv_send_image_cmd(int index, GSize size) {
   dict_write_int32(iter, MESSAGE_KEY_IMAGE_HEAP, (int)heap_bytes_free());
   app_message_outbox_send();
   return true;
+}
+
+static void prv_request_current_image(void) {
+  if (!s_image_window) {
+    return;
+  }
+  GRect bounds = layer_get_bounds(window_get_root_layer(s_image_window));
+  s_image_request_id++;
+  prv_clear_image_transfer();
+  prv_clear_image_bitmap();
+  prv_set_image_progress_status("Loading...");
+  if (!prv_send_image_cmd(bounds.size)) {
+    prv_set_image_status("Phone busy.\nTry again.");
+  }
+}
+
+static void prv_image_up_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_image_media_index > 0) {
+    s_image_media_index--;
+    prv_request_current_image();
+  }
+}
+
+static void prv_image_down_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_image_media_index + 1 < s_image_media_count) {
+    s_image_media_index++;
+    prv_request_current_image();
+  }
+}
+
+static void prv_image_click_config(void *context) {
+  if (s_image_media_count > 1) {
+    window_single_click_subscribe(BUTTON_ID_UP, prv_image_up_handler);
+    window_single_click_subscribe(BUTTON_ID_DOWN, prv_image_down_handler);
+  }
 }
 
 static void prv_image_window_load(Window *window) {
@@ -326,10 +475,7 @@ static void prv_image_window_load(Window *window) {
 
   prv_clear_image_transfer();
   prv_clear_image_bitmap();
-  prv_set_image_status("Loading photo...");
-  if (!prv_send_image_cmd(s_image_index, bounds.size)) {
-    prv_set_image_status("Phone busy.\nTry again.");
-  }
+  prv_request_current_image();
 }
 
 static void prv_image_window_unload(Window *window) {
@@ -341,23 +487,28 @@ static void prv_image_window_unload(Window *window) {
   s_image_bitmap_layer = NULL;
   text_layer_destroy(s_image_status_layer);
   s_image_status_layer = NULL;
+  s_image_tweet_index = -1;
+  s_image_media_index = 0;
+  s_image_media_count = 0;
   window_destroy(window);
   s_image_window = NULL;
 }
 
 static void prv_show_image(int index) {
   if (!PBL_IF_COLOR_ELSE(true, false) || s_image_window || index < 0 ||
-      index >= s_tweet_count || !s_tweets[index].has_media) {
+      index >= s_tweet_count || s_tweets[index].media_count <= 0) {
     return;
   }
-  s_image_index = index;
-  s_image_request_id++;
+  s_image_tweet_index = index;
+  s_image_media_index = 0;
+  s_image_media_count = s_tweets[index].media_count;
   s_image_window = window_create();
   window_set_background_color(s_image_window, GColorBlack);
   window_set_window_handlers(s_image_window, (WindowHandlers) {
     .load = prv_image_window_load,
     .unload = prv_image_window_unload,
   });
+  window_set_click_config_provider(s_image_window, prv_image_click_config);
   window_stack_push(s_image_window, true);
 }
 
@@ -573,7 +724,7 @@ static void prv_start_image_transfer(int total_bytes) {
   }
   s_image_expected_bytes = total_bytes;
   s_image_received_bytes = 0;
-  prv_set_image_status("Loading photo...\n0%");
+  prv_set_image_progress_status("0%");
 }
 
 static void prv_finish_image_transfer(void) {
@@ -620,8 +771,9 @@ static void prv_receive_image_chunk(DictionaryIterator *iter) {
     prv_finish_image_transfer();
   } else if (s_image_status_layer) {
     int pct = (s_image_received_bytes * 100) / s_image_expected_bytes;
-    snprintf(s_image_status_text, sizeof(s_image_status_text), "Loading photo...\n%d%%", pct);
-    text_layer_set_text(s_image_status_layer, s_image_status_text);
+    char progress[12];
+    snprintf(progress, sizeof(progress), "%d%%", pct);
+    prv_set_image_progress_status(progress);
   }
 }
 
@@ -687,6 +839,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     if (index >= 0 && index < MAX_TWEETS) {
       Tweet *tweet = &s_tweets[index];
       tweet->has_media = false;
+      tweet->media_count = 0;
       Tuple *field;
       if ((field = dict_find(iter, MESSAGE_KEY_AUTHOR))) {
         snprintf(tweet->author, sizeof(tweet->author), "%s", field->value->cstring);
@@ -704,6 +857,15 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       }
       if ((field = dict_find(iter, MESSAGE_KEY_HAS_MEDIA))) {
         tweet->has_media = PBL_IF_COLOR_ELSE(field->value->int32 != 0, false);
+        tweet->media_count = tweet->has_media ? 1 : 0;
+      }
+      if ((field = dict_find(iter, MESSAGE_KEY_MEDIA_COUNT))) {
+        int count = field->value->int32;
+        if (count < 0) {
+          count = 0;
+        }
+        tweet->media_count = PBL_IF_COLOR_ELSE(count, 0);
+        tweet->has_media = tweet->media_count > 0;
       }
       if (index + 1 > s_tweet_count) {
         s_tweet_count = index + 1;
@@ -719,9 +881,30 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       s_tweets[index].liked = true;
       vibes_short_pulse();
       menu_layer_reload_data(s_menu_layer);
-      prv_update_detail_footer();
-    } else if (s_detail_open) {
-      prv_set_footer("Like failed", false, NULL);
+      if (s_action_open && s_action_index == index) {
+        prv_action_set_labels();
+        prv_action_set_status("Liked.");
+      }
+    } else {
+      int failed_index = -index - 1;
+      if (s_action_open && failed_index == s_action_index) {
+        prv_action_set_status("Like failed.");
+      }
+    }
+  }
+
+  if ((t = dict_find(iter, MESSAGE_KEY_RETWEET_RESULT))) {
+    int index = t->value->int32;
+    if (index >= 0 && index < s_tweet_count) {
+      vibes_short_pulse();
+      if (s_action_open && s_action_index == index) {
+        prv_action_set_status("Retweeted.");
+      }
+    } else {
+      int failed_index = -index - 1;
+      if (s_action_open && failed_index == s_action_index) {
+        prv_action_set_status("Retweet failed.");
+      }
     }
   }
 }
@@ -739,7 +922,7 @@ static void prv_init(void) {
   window_stack_push(s_timeline_window, true);
 
   app_message_register_inbox_received(prv_inbox_received);
-  app_message_open(1024, 128);
+  app_message_open(1024, 256);
 
   prv_send_cmd(CMD_FETCH);
   app_timer_register(1000, prv_retry_fetch, NULL);

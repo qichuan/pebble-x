@@ -10,14 +10,15 @@ server/
                       GET  /api/health                            → { ok: true }   (no auth)
                       GET  /api/timeline?feed=following|foryou     → { feed, tweets: [...] }
                       POST /api/like  {tweet_id}                   → { ok: true }
-                      POST /api/media {media_url?,tweet_id?,width,height,color,heap} → watch PNG
+                      POST /api/retweet {tweet_id}                 → { ok: true }
+                      POST /api/media {media_url?,tweet_id?,image_index?,width,height,color,heap} → watch PNG
   api/_common.py    twikit client, tweet mapping, photo rendering
   vercel.json       rewrites all requests to the ASGI app
   login.py          run locally once to mint the X session cookie (not deployed)
   requirements.txt  twikit, fastapi, uvicorn, pillow
 ```
 
-The `/api/timeline`, `/api/like`, and `/api/media` endpoints require
+The `/api/timeline`, `/api/like`, `/api/retweet`, and `/api/media` endpoints require
 `Authorization: Bearer <APP_TOKEN>`.
 
 Run locally: `uvicorn api.index:app --port 9099` (or `python mock_server.py 9099`
@@ -88,8 +89,10 @@ curl -H "Authorization: Bearer $TOKEN" "$URL/api/timeline?feed=following"
 curl -X POST -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" -d '{"tweet_id":"123"}' "$URL/api/like"
 curl -X POST -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" -d '{"tweet_id":"123"}' "$URL/api/retweet"
+curl -X POST -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
-     -d '{"media_url":"https://pbs.twimg.com/media/example.jpg","tweet_id":"123","width":144,"height":168,"color":true,"heap":50000}' \
+     -d '{"media_url":"https://pbs.twimg.com/media/example.jpg","tweet_id":"123","image_index":0,"width":144,"height":168,"color":true,"heap":50000}' \
      "$URL/api/media"
 ```
 

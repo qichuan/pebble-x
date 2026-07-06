@@ -115,19 +115,33 @@ function serverRequest(method, path, body, callback) {
   xhr.send(body ? JSON.stringify(body) : null);
 }
 
+function normalizeMediaUrls(tweet) {
+  var urls = [];
+  var raw = tweet && tweet.media_urls;
+  if (raw && typeof raw !== 'string' && raw.length !== undefined) {
+    for (var i = 0; i < raw.length; i++) {
+      if (raw[i]) urls.push(raw[i]);
+    }
+  }
+  if (!urls.length && tweet && tweet.media_url) urls.push(tweet.media_url);
+  return urls;
+}
+
 function fetchTimeline(feed, callback) {
   serverRequest('GET', '/api/timeline?feed=' + feed, null, function (err, data) {
     if (err) return callback(err);
     var tweets = ((data && data.tweets) || []).map(function (t) {
-      var mediaUrl = t.media_url || '';
+      var mediaUrls = normalizeMediaUrls(t);
+      var mediaUrl = mediaUrls[0] || '';
       return {
         id: t.id,
         author: t.handle || t.name || '?',
         text: t.text || '',
         created_at: t.created_at,
         liked: !!t.favorited,
-        has_media: !!mediaUrl,
-        media_url: mediaUrl
+        has_media: mediaUrls.length > 0,
+        media_url: mediaUrl,
+        media_urls: mediaUrls
       };
     });
     saveJSON('cache_' + feed, { fetchedAt: Date.now(), tweets: tweets });
@@ -135,10 +149,11 @@ function fetchTimeline(feed, callback) {
   });
 }
 
-function fetchMedia(mediaUrl, tweetId, width, height, color, heap, callback) {
+function fetchMedia(mediaUrl, tweetId, imageIndex, width, height, color, heap, callback) {
   serverRequest('POST', '/api/media', {
     media_url: mediaUrl || '',
     tweet_id: tweetId || '',
+    image_index: imageIndex || 0,
     width: width,
     height: height,
     color: !!color,
@@ -155,6 +170,12 @@ function likeTweet(feed, index, callback) {
     saveJSON('cache_' + feed, cache);
     callback(null);
   });
+}
+
+function retweetTweet(feed, index, callback) {
+  var cache = loadJSON('cache_' + feed);
+  if (!cache || !cache.tweets[index]) return callback('server');
+  serverRequest('POST', '/api/retweet', { tweet_id: cache.tweets[index].id }, callback);
 }
 
 // ---- Watch messaging ----
@@ -212,7 +233,9 @@ function sendTimeline(tweets) {
   enqueue({ TWEET_COUNT: tweets.length, STATUS: STATUS_OK });
   tweets.forEach(function (t, i) {
     var text = t.text;
-    var hasPhoto = !!(t.has_media && t.media_url);
+    var mediaUrls = normalizeMediaUrls(t);
+    var mediaCount = mediaUrls.length;
+    var hasPhoto = mediaCount > 0;
     if (hasPhoto) text += ' [photo]';
     enqueue({
       TWEET_INDEX: i,
@@ -220,7 +243,8 @@ function sendTimeline(tweets) {
       TEXT: truncateUtf8(text, MAX_TEXT_BYTES),
       TIME_AGO: timeAgo(t.created_at),
       LIKED: t.liked ? 1 : 0,
-      HAS_MEDIA: hasPhoto ? 1 : 0
+      HAS_MEDIA: hasPhoto ? 1 : 0,
+      MEDIA_COUNT: mediaCount
     });
   });
 }
@@ -258,15 +282,20 @@ function sendImagePayload(requestId, data) {
 function deliverImage(payload, feed) {
   var requestId = payload.IMAGE_ID || 0;
   var index = payload.TWEET_INDEX;
+  var imageIndex = payload.IMAGE_INDEX || 0;
   var cache = loadJSON('cache_' + feed);
   var tweet = cache && cache.tweets && cache.tweets[index];
-  if (!tweet || (!tweet.media_url && !tweet.id)) {
+  if (!tweet) {
     return sendImageError(requestId, IMAGE_ERROR_MISSING);
   }
+  var mediaUrls = normalizeMediaUrls(tweet);
+  var mediaUrl = mediaUrls[imageIndex] || '';
+  if (!mediaUrl && !tweet.id) return sendImageError(requestId, IMAGE_ERROR_MISSING);
 
   fetchMedia(
-    tweet.media_url,
+    mediaUrl,
     tweet.id,
+    imageIndex,
     payload.IMAGE_W || 144,
     payload.IMAGE_H || 168,
     payload.IMAGE_COLOR !== 0,
@@ -331,6 +360,12 @@ Pebble.addEventListener('appmessage', function (e) {
     var index = payload.LIKE_INDEX;
     likeTweet(feed, index, function (err) {
       enqueue({ LIKE_RESULT: err ? -(index + 1) : index });
+    });
+  }
+  if (payload.RETWEET_INDEX !== undefined) {
+    var retweetIndex = payload.RETWEET_INDEX;
+    retweetTweet(feed, retweetIndex, function (err) {
+      enqueue({ RETWEET_RESULT: err ? -(retweetIndex + 1) : retweetIndex });
     });
   }
 });

@@ -45,7 +45,11 @@
       "IMAGE_CHUNK_COUNT",
       "IMAGE_DATA",
       "IMAGE_ERROR",
-      "IMAGE_HEAP"
+      "IMAGE_HEAP",
+      "MEDIA_COUNT",
+      "IMAGE_INDEX",
+      "RETWEET_INDEX",
+      "RETWEET_RESULT"
     ],
     "resources": {
       "media": [

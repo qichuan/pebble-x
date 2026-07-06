@@ -100,18 +100,26 @@ def media_url(media_item) -> str:
 
 
 def first_media_url(tweet) -> str:
+    urls = media_urls(tweet)
+    return urls[0] if urls else ""
+
+
+def media_urls(tweet) -> list[str]:
     media = getattr(tweet, "media", None) or []
+    urls = []
+    seen = set()
     for item in media:
         direct = media_url(item)
-        if direct:
-            return direct
-    return ""
+        if direct and direct not in seen:
+            urls.append(direct)
+            seen.add(direct)
+    return urls
 
 
 def tweet_to_dict(t) -> dict:
     """Flatten a twikit Tweet into the small shape the watch needs."""
-    media = getattr(t, "media", None) or []
-    url = first_media_url(t)
+    urls = media_urls(t)
+    url = urls[0] if urls else ""
     return {
         "id": t.id,
         "name": getattr(t.user, "name", "") or "",
@@ -121,6 +129,7 @@ def tweet_to_dict(t) -> dict:
         "favorited": bool(getattr(t, "favorited", False)),
         "has_media": bool(url),
         "media_url": url,
+        "media_urls": urls,
     }
 
 

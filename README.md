@@ -19,13 +19,13 @@ docs/index.html   Settings page (GitHub Pages) — enter server URL + token
 ```
 Watch (C)  ──AppMessage──▶  Pebble phone app (pkjs)  ──HTTPS+Bearer──▶  your server  ──twikit──▶  X
  timeline list                fetch + cache                              /api/timeline
- detail + like                                                          /api/like
+ detail actions                                                         /api/like, /api/retweet
 ```
 
 - **Watch**: a timeline list with a **feed toggle** at the top (Following ⇄ For
   You) and a section header showing the current feed. SELECT opens a tweet;
-  SELECT again likes it. On color watches, DOWN at the end of a tweet detail
-  opens the photo. Long-press SELECT refreshes.
+  SELECT in the detail opens an action menu for retweet, like, and images. Long-press
+  SELECT refreshes from the timeline.
 - **pkjs** (inside the Pebble phone app): calls your server, caches each feed so
   reopening the app is instant/free, and bridges to the watch over AppMessage.
 - **Server** (`server/`): fetches the timeline, posts likes, and renders photos
@@ -38,17 +38,20 @@ on color watches so timeline browsing stays fast and cheap.
 ## REST API
 
 The server is a FastAPI app (`server/api/index.py`). The watch reaches it over the
-internet; `/api/timeline` and `/api/like` require `Authorization: Bearer <APP_TOKEN>`.
+internet; `/api/timeline`, `/api/like`, `/api/retweet`, and `/api/media` require
+`Authorization: Bearer <APP_TOKEN>`.
 
 | Method | Path                                  | Body            | Response               |
 |--------|---------------------------------------|-----------------|------------------------|
 | GET    | `/api/health`                         | —               | `{ ok: true }`         |
 | GET    | `/api/timeline?feed=following\|foryou` | —                 | `{ feed, tweets: [] }` |
 | POST   | `/api/like`                           | `{ tweet_id }`    | `{ ok: true }`         |
-| POST   | `/api/media`                          | `{ media_url?, tweet_id?, width, height, color, heap? }` | `{ width, height, byte_count, image_base64 }` |
+| POST   | `/api/retweet`                        | `{ tweet_id }`    | `{ ok: true }`         |
+| POST   | `/api/media`                          | `{ media_url?, tweet_id?, image_index?, width, height, color, heap? }` | `{ width, height, byte_count, image_base64 }` |
 
-Each `tweets[]` item: `{ id, name, handle, text, created_at, favorited, has_media, media_url }`
-(max 15 per response). Errors: `401` (bad/missing token), `422` (bad body),
+Each `tweets[]` item: `{ id, name, handle, text, created_at, favorited, has_media, media_url, media_urls }`
+(max 15 per response). `media_url` is the first photo for compatibility; `media_urls`
+contains all photo URLs. Errors: `401` (bad/missing token), `422` (bad body),
 `502` (twikit/upstream failure, with `detail`).
 
 ## Setup
@@ -88,17 +91,19 @@ Open the Pebble phone app → Peep → Settings. Enter your **server URL** and t
 | Timeline | SELECT on a tweet | open it                         |
 | Timeline | long-press SELECT | refresh                         |
 | Detail   | UP / DOWN         | scroll text                     |
-| Detail   | DOWN at end       | open photo on color watches     |
-| Detail   | SELECT            | like                            |
-| Photo    | BACK              | return to tweet                 |
+| Detail   | SELECT            | open action menu                |
+| Actions  | UP                | retweet                         |
+| Actions  | SELECT            | like                            |
+| Actions  | DOWN              | open images on color watches    |
+| Photo    | UP / DOWN         | previous / next image           |
+| Photo    | BACK              | return to actions               |
 
 ## Limitations
 
 - Tweets longer than ~437 UTF-8 bytes are truncated on the watch.
-- Only the first photo on a tweet is shown. Photos are resized to the active
-  color watch screen using the watch-reported dimensions (144x168, 180x180, or
-  200x228) and converted to Pebble's 64-color palette. B/W watches do not open
-  photos.
+- Photos are resized to the active color watch screen using the watch-reported
+  dimensions (144x168, 180x180, or 200x228) and converted to Pebble's 64-color
+  palette. B/W watches do not show the Images action.
 - Non-Latin scripts render as boxes unless the watch firmware has the matching
   language pack (Settings → Language in the phone app).
 - twikit uses X's internal API and **breaks every few weeks** when X changes it;

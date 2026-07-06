@@ -3,6 +3,7 @@
 The Pebble app reaches these endpoints over the internet:
     GET  /api/timeline?feed=following|foryou   -> { feed, tweets: [...] }
     POST /api/like   {tweet_id}                 -> { ok: true }
+    POST /api/retweet {tweet_id}                -> { ok: true }
     GET  /api/health                            -> { ok: true }   (no auth)
 
 Both data endpoints require `Authorization: Bearer <APP_TOKEN>`.
@@ -17,7 +18,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _common import first_media_url, make_client, render_media_for_watch, tweet_to_dict
+from _common import media_urls, make_client, render_media_for_watch, tweet_to_dict
 
 MAX_TWEETS = 15
 
@@ -34,9 +35,14 @@ class LikeBody(BaseModel):
     tweet_id: str
 
 
+class RetweetBody(BaseModel):
+    tweet_id: str
+
+
 class MediaBody(BaseModel):
     media_url: str = ""
     tweet_id: str = ""
+    image_index: int = 0
     width: int
     height: int
     color: bool = True
@@ -75,6 +81,16 @@ async def like(body: LikeBody) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/retweet", dependencies=[Depends(require_token)])
+async def retweet(body: RetweetBody) -> dict:
+    try:
+        client = make_client()
+        await client.retweet(body.tweet_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"ok": True}
+
+
 @app.post("/api/media", dependencies=[Depends(require_token)])
 async def media(body: MediaBody) -> dict:
     try:
@@ -82,7 +98,9 @@ async def media(body: MediaBody) -> dict:
         if not media_url and body.tweet_id:
             client = make_client()
             tweet = await client.get_tweet_by_id(body.tweet_id)
-            media_url = first_media_url(tweet)
+            urls = media_urls(tweet)
+            if 0 <= body.image_index < len(urls):
+                media_url = urls[body.image_index]
         if not media_url:
             raise ValueError("no photo found")
         rendered = render_media_for_watch(media_url, body.width, body.height, body.color, body.heap)

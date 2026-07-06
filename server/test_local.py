@@ -21,7 +21,14 @@ class FakeTweet:
         self.text = f"Tweet number {i} 中文"
         self.created_at = "Mon Jul 06 09:00:00 +0000 2026"
         self.favorited = False
-        self.media = [{"media_url_https": f"https://pbs.twimg.com/media/fake-{i}.jpg"}] if media else []
+        self.media = (
+            [
+                {"media_url_https": f"https://pbs.twimg.com/media/fake-{i}-0.jpg"},
+                {"media_url_https": f"https://pbs.twimg.com/media/fake-{i}-1.jpg"},
+            ]
+            if media
+            else []
+        )
 
 
 class FakeClient:
@@ -42,6 +49,10 @@ class FakeClient:
         return FakeTweet(77, media=True)
 
     async def favorite_tweet(self, tid):
+        assert tid == "1000"
+        return True
+
+    async def retweet(self, tid):
         assert tid == "1000"
         return True
 
@@ -72,8 +83,12 @@ with mock.patch("_common.Client", FakeClient):
     ids = [t["id"] for t in b["tweets"]]
     assert ids == sorted(ids, key=int, reverse=True) and ids[0] == "1019", ids
     assert b["tweets"][2]["has_media"] is True and b["tweets"][0]["has_media"] is False
-    assert b["tweets"][2]["media_url"] == "https://pbs.twimg.com/media/fake-17.jpg"
-    print("PASS  following -> 15 tweets newest-first, media URL, handle")
+    assert b["tweets"][2]["media_url"] == "https://pbs.twimg.com/media/fake-17-0.jpg"
+    assert b["tweets"][2]["media_urls"] == [
+        "https://pbs.twimg.com/media/fake-17-0.jpg",
+        "https://pbs.twimg.com/media/fake-17-1.jpg",
+    ]
+    print("PASS  following -> 15 tweets newest-first, media URLs, handle")
 
     r = client.get("/api/timeline?feed=foryou", headers=AUTH)
     b = r.json()
@@ -88,6 +103,10 @@ with mock.patch("_common.Client", FakeClient):
     assert r.status_code == 422, r.status_code  # pydantic: missing tweet_id
     print("PASS  like no-id -> 422")
 
+    r = client.post("/api/retweet", json={"tweet_id": "1000"}, headers=AUTH)
+    assert r.status_code == 200 and r.json()["ok"] is True, r.json()
+    print("PASS  retweet -> ok")
+
     with mock.patch(
         "index.render_media_for_watch",
         return_value={
@@ -100,7 +119,7 @@ with mock.patch("_common.Client", FakeClient):
         r = client.post(
             "/api/media",
             json={
-                "media_url": "https://pbs.twimg.com/media/fake-17.jpg",
+                "media_url": "https://pbs.twimg.com/media/fake-17-0.jpg",
                 "tweet_id": "1017",
                 "width": 144,
                 "height": 168,
@@ -126,6 +145,7 @@ with mock.patch("_common.Client", FakeClient):
             "/api/media",
             json={
                 "tweet_id": "1077",
+                "image_index": 1,
                 "width": 144,
                 "height": 168,
                 "color": True,
@@ -134,8 +154,8 @@ with mock.patch("_common.Client", FakeClient):
             headers=AUTH,
         )
         assert r.status_code == 200, r.json()
-        assert render_mock.call_args.args[0] == "https://pbs.twimg.com/media/fake-77.jpg"
-        print("PASS  media fallback -> resolves URL from tweet id")
+        assert render_mock.call_args.args[0] == "https://pbs.twimg.com/media/fake-77-1.jpg"
+        print("PASS  media fallback -> resolves indexed URL from tweet id")
 
 # Regression for the 2026-07 X payload change: real twikit (no network) must
 # parse a user whose legacy.entities.description has no 'urls' key, and one
@@ -148,6 +168,14 @@ import _common
 photo = TwikitPhoto(None, {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/p.jpg"})
 assert _common.media_url(photo) == "https://pbs.twimg.com/media/p.jpg"
 print("PASS  twikit media parse -> extracts Photo.media_url")
+
+photo2 = TwikitPhoto(None, {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/q.jpg"})
+tweet_with_photos = type("TweetWithPhotos", (), {"media": [photo, photo2]})()
+assert _common.media_urls(tweet_with_photos) == [
+    "https://pbs.twimg.com/media/p.jpg",
+    "https://pbs.twimg.com/media/q.jpg",
+]
+print("PASS  twikit media parse -> extracts multiple photos")
 
 slim = {
     "rest_id": "42",
