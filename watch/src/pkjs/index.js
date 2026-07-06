@@ -322,11 +322,15 @@ function deliverTimeline(forceFetch, feed) {
   var cache = loadJSON('cache_' + feed);
   if (!forceFetch && cache && cache.tweets && cache.tweets.length > 0) {
     sendTimeline(cache.tweets);
-    // Stale-while-revalidate: quietly refresh an old cache. Errors stay
-    // silent - the user is already looking at usable cached tweets.
+    // Stale-while-revalidate: refresh an old cache in the background. The
+    // watch shows its refresh indicator meanwhile; errors stay silent - the
+    // user is already looking at usable cached tweets - but still clear the
+    // indicator with a plain STATUS_OK.
     if (Date.now() - (cache.fetchedAt || 0) > CACHE_FRESH_MS) {
+      sendStatus(STATUS_FETCHING);
       fetchTimeline(feed, function (err, tweets) {
-        if (!err && tweets.length > 0) sendTimeline(tweets);
+        if (!err && tweets.length > 0) return sendTimeline(tweets);
+        sendStatus(STATUS_OK);
       });
     }
     return;

@@ -65,9 +65,11 @@ static Layer *s_feed_overlay_layer;
 static GBitmap *s_swap_bitmap;
 static GBitmap *s_refresh_bitmap;
 
-// Refresh-in-progress indicator on the feed status row (animated dots).
+// Refresh-in-progress indicator: the status-row dot ripples (an expanding
+// ring) while any refresh — manual or background revalidation — is in flight.
+#define RIPPLE_PHASES 8  // 0..6 draw a growing ring, 7 is a pause frame
 static bool s_refreshing = false;
-static int s_refresh_dots = 1;
+static int s_refresh_phase = 0;
 static AppTimer *s_refresh_timer = NULL;
 
 static Window *s_detail_window;
@@ -544,8 +546,8 @@ static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index,
 }
 
 static void prv_refresh_tick(void *context) {
-  s_refresh_dots = (s_refresh_dots % 3) + 1;
-  s_refresh_timer = app_timer_register(400, prv_refresh_tick, NULL);
+  s_refresh_phase = (s_refresh_phase + 1) % RIPPLE_PHASES;
+  s_refresh_timer = app_timer_register(100, prv_refresh_tick, NULL);
   if (s_menu_layer) {
     layer_mark_dirty(menu_layer_get_layer(s_menu_layer));
   }
@@ -556,9 +558,9 @@ static void prv_set_refreshing(bool refreshing) {
     return;
   }
   s_refreshing = refreshing;
-  s_refresh_dots = 1;
+  s_refresh_phase = 0;
   if (refreshing) {
-    s_refresh_timer = app_timer_register(400, prv_refresh_tick, NULL);
+    s_refresh_timer = app_timer_register(100, prv_refresh_tick, NULL);
   } else if (s_refresh_timer) {
     app_timer_cancel(s_refresh_timer);
     s_refresh_timer = NULL;
@@ -574,23 +576,22 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
 
   if (cell_index->row == 0) {
     // Status row: shows the CURRENT feed; SELECT opens the action overlay.
-    // While a refresh is in flight it shows animated "Refreshing..." instead.
+    // While a refresh is in flight the dot ripples (expanding ring).
     GColor fg = highlighted ? GColorWhite : ACCENT_COLOR;
+    GPoint dot = GPoint(15, bounds.size.h / 2 - 1);
     graphics_context_set_fill_color(ctx, fg);
-    graphics_fill_circle(ctx, GPoint(13, bounds.size.h / 2 - 1), 3);
-    graphics_context_set_text_color(ctx, fg);
-    char label[16];
-    snprintf(label, sizeof(label), "%s%.*s",
-             s_refreshing ? "Refreshing" : prv_feed_name(s_feed),
-             s_refreshing ? s_refresh_dots : 0, "...");
-    graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(22, 2, bounds.size.w - 44, 24), GTextOverflowModeTrailingEllipsis,
-                       GTextAlignmentLeft, NULL);
-    if (!s_refreshing) {
-      graphics_draw_text(ctx, ">", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                         GRect(bounds.size.w - 20, 2, 14, 24), GTextOverflowModeTrailingEllipsis,
-                         GTextAlignmentRight, NULL);
+    graphics_fill_circle(ctx, dot, 3);
+    if (s_refreshing && s_refresh_phase < RIPPLE_PHASES - 1) {
+      graphics_context_set_stroke_color(ctx, fg);
+      graphics_draw_circle(ctx, dot, 5 + s_refresh_phase);
     }
+    graphics_context_set_text_color(ctx, fg);
+    graphics_draw_text(ctx, prv_feed_name(s_feed), fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(28, 2, bounds.size.w - 50, 24), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentLeft, NULL);
+    graphics_draw_text(ctx, ">", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(bounds.size.w - 20, 2, 14, 24), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentRight, NULL);
     return;
   }
 
