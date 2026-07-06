@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 from twikit import Client
 
 import _twikit_patch  # noqa: F401  applies the ondemand.s login fix on import
+import _storage
 
 MAX_MEDIA_DOWNLOAD_BYTES = 5 * 1024 * 1024
 MAX_RENDERED_MEDIA_BYTES = 28 * 1024
@@ -20,18 +21,41 @@ MIN_RENDERED_DIMENSION = 64
 ALLOWED_MEDIA_HOST_SUFFIXES = ("twimg.com",)
 
 
-def make_client() -> Client:
-    """Build a twikit client from the cookie blob stored in the env.
+def load_cookies() -> tuple[dict, str]:
+    """Return (cookies, source) — Upstash Redis first, X_COOKIES env fallback.
 
-    Stateless: every serverless invocation rebuilds the client from
-    X_COOKIES (JSON produced by login.py). No login happens here.
+    No caching across invocations: warm instances must not keep serving stale
+    cookies after the user re-pastes fresh ones via /setup. If Redis is
+    configured but unreachable, the error propagates (falling back to a
+    possibly-stale env var would mask it).
     """
-    cookies_raw = os.environ.get("X_COOKIES")
-    if not cookies_raw:
-        raise RuntimeError("X_COOKIES env var is not set")
+    raw = _storage.load_cookies_raw()
+    if raw:
+        return json.loads(raw), "redis"
+    raw = os.environ.get("X_COOKIES")
+    if raw:
+        return json.loads(raw), "env"
+    raise RuntimeError(
+        "X session not configured — open https://<your-server>/setup "
+        "and paste your x.com cookies"
+    )
+
+
+def make_client_with(cookies: dict) -> Client:
     client = Client("en-US")
-    client.set_cookies(json.loads(cookies_raw))
+    client.set_cookies(cookies)
     return client
+
+
+def make_client() -> Client:
+    """Build a twikit client from the stored cookie blob.
+
+    Stateless: every serverless invocation rebuilds the client from Upstash
+    Redis (written by the /setup wizard) or the X_COOKIES env var. No login
+    happens here.
+    """
+    cookies, _ = load_cookies()
+    return make_client_with(cookies)
 
 
 def _value(obj, key):

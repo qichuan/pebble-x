@@ -6,19 +6,35 @@ The Pebble app reaches these endpoints over the internet:
     POST /api/retweet {tweet_id}                -> { ok: true }
     GET  /api/health                            -> { ok: true }   (no auth)
 
-Both data endpoints require `Authorization: Bearer <APP_TOKEN>`.
+The setup wizard (browser, not the watch) uses:
+    GET  /setup                                 -> HTML wizard    (no auth)
+    POST /api/config {auth_token, ct0}          -> { ok, verified, screen_name }
+    GET  /api/config/status                     -> { configured, source }
+
+All data/config endpoints require `Authorization: Bearer <APP_TOKEN>`.
 
 Deployed on Vercel as an ASGI app (see vercel.json rewrites). For local dev:
     uvicorn api.index:app --port 9099
 """
+import json
 import os
 import sys
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _common import media_urls, make_client, render_media_for_watch, tweet_to_dict
+import _storage
+from _common import (
+    load_cookies,
+    make_client,
+    make_client_with,
+    media_urls,
+    render_media_for_watch,
+    tweet_to_dict,
+)
+from _setup_page import SETUP_HTML
 
 MAX_TWEETS = 15
 
@@ -49,9 +65,47 @@ class MediaBody(BaseModel):
     heap: int = 0
 
 
+class ConfigBody(BaseModel):
+    auth_token: str = Field(pattern=r"^[0-9A-Fa-f]{20,80}$")
+    ct0: str = Field(pattern=r"^[0-9A-Fa-f]{16,200}$")
+
+
 @app.get("/api/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/setup")
+async def setup_page() -> HTMLResponse:
+    return HTMLResponse(SETUP_HTML)
+
+
+@app.post("/api/config", dependencies=[Depends(require_token)])
+async def config(body: ConfigBody) -> dict:
+    if not _storage.storage_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="no cookie storage configured — connect Upstash Redis "
+            "(Vercel project → Storage) and redeploy",
+        )
+    cookies = {"auth_token": body.auth_token, "ct0": body.ct0}
+    _storage.store_cookies_raw(json.dumps(cookies))
+    # Store first, verify best-effort: Cloudflare can block the verify call
+    # from a datacenter IP even when the cookies themselves are good.
+    try:
+        user = await make_client_with(cookies).user()
+        return {"ok": True, "verified": True, "screen_name": user.screen_name, "detail": None}
+    except Exception as e:
+        return {"ok": True, "verified": False, "screen_name": None, "detail": str(e)}
+
+
+@app.get("/api/config/status", dependencies=[Depends(require_token)])
+async def config_status() -> dict:
+    try:
+        _, source = load_cookies()
+        return {"configured": True, "source": source}
+    except Exception:
+        return {"configured": False, "source": None}
 
 
 @app.get("/api/timeline", dependencies=[Depends(require_token)])

@@ -56,6 +56,9 @@ class FakeClient:
         assert tid == "1000"
         return True
 
+    async def user(self):
+        return FakeUser()
+
 
 with mock.patch("_common.Client", FakeClient):
     from fastapi.testclient import TestClient
@@ -156,6 +159,54 @@ with mock.patch("_common.Client", FakeClient):
         assert r.status_code == 200, r.json()
         assert render_mock.call_args.args[0] == "https://pbs.twimg.com/media/fake-77-1.jpg"
         print("PASS  media fallback -> resolves indexed URL from tweet id")
+
+    # ---- Setup wizard & cookie config ----
+    r = client.get("/setup")
+    assert r.status_code == 200 and "auth_token" in r.text and "Copy as cURL" in r.text
+    print("PASS  setup page -> served without auth")
+
+    good_cookies = {"auth_token": "a" * 40, "ct0": "b" * 160}
+
+    r = client.post("/api/config", json=good_cookies)
+    assert r.status_code == 401, r.status_code
+    print("PASS  config no-token -> 401")
+
+    r = client.post("/api/config", json={"auth_token": "not hex!", "ct0": "b" * 160}, headers=AUTH)
+    assert r.status_code == 422, r.status_code
+    print("PASS  config non-hex values -> 422")
+
+    r = client.post("/api/config", json=good_cookies, headers=AUTH)
+    assert r.status_code == 503 and "Upstash" in r.json()["detail"], r.json()
+    print("PASS  config without storage -> 503 with Upstash hint")
+
+    fake_store = {}
+    with mock.patch("_storage.storage_configured", return_value=True), mock.patch(
+        "_storage.store_cookies_raw", side_effect=lambda raw: fake_store.update(v=raw)
+    ), mock.patch("_storage.load_cookies_raw", side_effect=lambda: fake_store.get("v")):
+        r = client.post("/api/config", json=good_cookies, headers=AUTH)
+        b = r.json()
+        assert r.status_code == 200 and b["ok"] and b["verified"], b
+        assert b["screen_name"] == "janedev"
+        assert json.loads(fake_store["v"]) == good_cookies
+        print("PASS  config -> stored raw X_COOKIES shape, verified as @janedev")
+
+        r = client.get("/api/config/status", headers=AUTH)
+        assert r.json() == {"configured": True, "source": "redis"}, r.json()
+        print("PASS  config status -> redis source")
+
+    r = client.get("/api/config/status", headers=AUTH)
+    assert r.json() == {"configured": True, "source": "env"}, r.json()
+    print("PASS  config status -> env fallback source")
+
+    with mock.patch.dict(os.environ):
+        del os.environ["X_COOKIES"]
+        r = client.get("/api/timeline?feed=following", headers=AUTH)
+        assert r.status_code == 502 and "/setup" in r.json()["detail"], r.json()
+        print("PASS  timeline unconfigured -> 502 pointing at /setup")
+
+        r = client.get("/api/config/status", headers=AUTH)
+        assert r.json() == {"configured": False, "source": None}, r.json()
+        print("PASS  config status unconfigured -> false")
 
 # Regression for the 2026-07 X payload change: real twikit (no network) must
 # parse a user whose legacy.entities.description has no 'urls' key, and one

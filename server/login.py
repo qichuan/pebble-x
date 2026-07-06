@@ -1,5 +1,8 @@
 """One-off local setup for TweetFit. NOT deployed to Vercel.
 
+Legacy fallback — prefer the /setup wizard on your deployed server, which
+stores the cookies without touching env vars or redeploying.
+
 X now blocks automated username/password login behind Cloudflare, so instead of
 logging in programmatically we reuse the session from a browser where you're
 already logged in to x.com. Your browser passed Cloudflare normally, so its

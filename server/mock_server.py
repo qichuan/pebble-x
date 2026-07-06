@@ -66,11 +66,21 @@ class FakeClient:
         print("RETWEETED tweet", tid, flush=True)
         return True
 
+    async def user(self):
+        return FakeUser("janedev")
+
 
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 9099
 mock.patch("_common.Client", FakeClient).start()
 
 import index  # noqa: E402
+import _storage  # noqa: E402
+
+# In-memory cookie storage so the /setup wizard is fully testable in a browser.
+_cookie_store = {}
+_storage.storage_configured = lambda: True
+_storage.load_cookies_raw = lambda: _cookie_store.get("v")
+_storage.store_cookies_raw = lambda raw: _cookie_store.update(v=raw)
 
 
 def fake_render_media_for_watch(media_url, width, height, color, heap=0):

@@ -60,10 +60,12 @@ contains all photo URLs. Errors: `401` (bad/missing token), `422` (bad body),
 
 ### 1. Stand up the server
 
-Follow [`server/README.md`](server/README.md): run `python login.py` once on your
-own machine to mint an X session cookie and an access token, deploy to Vercel, and
-set the `X_COOKIES` + `APP_TOKEN` environment variables. You'll get a URL like
-`https://tweetfit-xyz.vercel.app`.
+Follow [`server/README.md`](server/README.md): one-click deploy to Vercel (pick
+an `APP_TOKEN`), connect the free Upstash Redis storage, then open
+`https://<your-app>.vercel.app/setup` in a desktop browser and paste a
+"Copy as cURL" from x.com DevTools — the wizard extracts your session cookies
+and stores them on your server. No Python, no terminal. You'll end up with a
+URL like `https://tweetfit-xyz.vercel.app`.
 
 ### 2. Enable GitHub Pages (settings page)
 

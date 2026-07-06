@@ -82,15 +82,20 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   app — don't subscribe BACK on the timeline window without re-binding it.
 - **twikit is fragile**: it uses X's private GraphQL API and breaks every few
   weeks. Server catches upstream errors and returns `502` with `detail`. Fix =
-  `pip install -U twikit`, sometimes a fresh `python login.py`. Known breakages
-  are patched at import time in `server/api/_twikit_patch.py` (login key
-  extraction, user-payload backfill) — a 502 whose `detail` is a bare quoted
-  key name (e.g. `"'urls'"`) means X dropped another field; add it to the
-  backfill table there.
-- **X session**: X blocks automated login behind Cloudflare, so `server/login.py`
-  (never deployed) does NOT log in — it formats the `auth_token` + `ct0` cookies
-  you copy from a logged-in x.com browser tab into the `X_COOKIES` env var. No
-  password is ever handled. The watch↔server shared secret is `APP_TOKEN`.
+  `pip install -U twikit`, sometimes fresh cookies via the `/setup` wizard (no
+  redeploy). Known breakages are patched at import time in
+  `server/api/_twikit_patch.py` (login key extraction, user-payload backfill) —
+  a 502 whose `detail` is a bare quoted key name (e.g. `"'urls'"`) means X
+  dropped another field; add it to the backfill table there.
+- **X session**: X blocks automated login behind Cloudflare, so no password is
+  ever handled — the user pastes a "Copy as cURL" blob from a logged-in x.com
+  DevTools tab into the server's `/setup` wizard, which extracts `auth_token` +
+  `ct0` (`POST /api/config`) and stores them in Upstash Redis (key
+  `tweetfit:x_cookies`, helpers in `server/api/_storage.py`). Cookie
+  read-through is `_common.load_cookies()`: Redis first, `X_COOKIES` env var as
+  fallback — never cache cookies across invocations. `server/login.py` is the
+  legacy manual path (formats the env var). The watch↔server shared secret is
+  `APP_TOKEN` (deploy-time env var).
 - **Cost discipline**: the watch never auto-polls. It shows cached tweets on
   launch and only hits the network on explicit refresh (long-press SELECT) or an
   empty cache. Preserve this.
@@ -102,9 +107,12 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
 - pkjs `CONFIG_URL` and the OAuth-free settings page point at
   `https://qichuan.github.io/pebble-x/`. On a fork, change both.
 - Vercel serves the single ASGI app via a catch-all rewrite in
-  `server/vercel.json`; all routes live in `server/api/index.py`. Files starting
-  with `_` (e.g. `_common.py`) are helpers, not routed. Root-level `.py`
-  (`login.py`, `mock_server.py`, `test_local.py`) are dev-only, not deployed.
+  `server/vercel.json`; all routes live in `server/api/index.py` (including the
+  browser-facing `GET /setup` wizard, `POST /api/config`, and
+  `GET /api/config/status`). Files starting with `_` (`_common.py`,
+  `_storage.py`, `_setup_page.py`, `_twikit_patch.py`) are helpers, not routed.
+  Root-level `.py` (`login.py`, `mock_server.py`, `test_local.py`) are dev-only,
+  not deployed.
 - App UUID: `46056075-4bc7-4d0c-8c90-51e4bba892fd`. `capabilities: ["configurable"]`
   in `package.json` is what makes the phone app show the Settings gear — don't drop it.
 
