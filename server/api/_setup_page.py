@@ -18,7 +18,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
   * { box-sizing: border-box; }
   body {
     font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: #f5f5f5; color: #1a1a1a;
+    background: #f5f5f5; color: #000;
     margin: 0; padding: 24px 16px; max-width: 560px; margin-inline: auto;
   }
   @media (prefers-color-scheme: dark) {
@@ -30,7 +30,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
     code { background: #333; }
   }
   h1 { font-size: 24px; margin: 0 0 4px; }
-  .sub { color: #777; margin: 0 0 24px; }
+  .sub { color: #000; margin: 0 0 24px; }
   .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.12); margin-bottom: 16px; }
   ol { margin: 0 0 8px; padding-left: 20px; font-size: 14px; line-height: 1.6; }
   code { background: #eee; border-radius: 4px; padding: 1px 5px; font-size: 13px; }
