@@ -81,4 +81,32 @@ with mock.patch("_common.Client", FakeClient):
     assert r.status_code == 422, r.status_code  # pydantic: missing tweet_id
     print("PASS  like no-id -> 422")
 
+# Regression for the 2026-07 X payload change: real twikit (no network) must
+# parse a user whose legacy.entities.description has no 'urls' key, and one
+# whose fields moved out of `legacy` into the new `core`/`avatar` groups.
+from twikit.user import User as TwikitUser
+
+slim = {
+    "rest_id": "42",
+    "legacy": {
+        "name": "Jane Dev",
+        "screen_name": "janedev",
+        "entities": {"description": {}},  # 'urls' omitted — used to KeyError
+    },
+}
+u = TwikitUser(None, slim)
+assert u.screen_name == "janedev" and u.description_urls == []
+print("PASS  twikit user parse -> survives missing description.urls")
+
+migrated = {
+    "rest_id": "43",
+    "legacy": {},
+    "core": {"name": "New Layout", "screen_name": "newlayout", "created_at": "x"},
+    "avatar": {"image_url": "https://example.com/a.jpg"},
+}
+u = TwikitUser(None, migrated)
+assert u.name == "New Layout" and u.screen_name == "newlayout"
+assert u.profile_image_url == "https://example.com/a.jpg"
+print("PASS  twikit user parse -> backfills from core/avatar groups")
+
 print("\nAll server smoke tests passed.")

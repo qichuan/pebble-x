@@ -1,5 +1,6 @@
-"""Runtime patch for twikit's transaction-key extraction.
+"""Runtime patches for twikit 2.3.3 (latest on PyPI, upstream is slow).
 
+Patch 1 — transaction-key extraction (2026-03).
 Around 2026-03-18 X changed the webpack layout of its home page: the
 `ondemand.s` chunk hash is no longer embedded inline as `"ondemand.s":"<hash>"`.
 It is now a numeric chunk index (`,<idx>:"ondemand.s"`) that must be resolved to
@@ -15,9 +16,21 @@ twikit (both _common.py and login.py do).
 
 If login breaks again with the same error, X likely changed the format once more —
 re-check those upstream PRs/issues and update the regexes below.
+
+Patch 2 — user payload backfill (2026-07).
+X is migrating user fields out of `legacy` into new top-level groups (`core`,
+`avatar`, `location`, `profile_bio`, `verification`, ...) and has started
+omitting keys that twikit's `User.__init__` subscripts directly. First
+casualty: `legacy.entities.description.urls`, which made every timeline fetch
+fail with KeyError('urls') (surfaced as 502 {"detail":"'urls'"}). Before the
+original `__init__` runs we backfill missing `legacy` keys from their new
+locations when present, else with a benign default. If timelines 502 again
+with a bare quoted key name as the detail, it's the same class of breakage —
+add the key here.
 """
 import re
 
+from twikit import user as _user
 from twikit.x_client_transaction import transaction as _t
 
 # New format: ,1234:"ondemand.s"  with a separate  ,1234:"<hash>"  mapping.
@@ -69,8 +82,66 @@ async def _get_indices(self, home_page_response, session, headers):
     return values[0], values[1:]
 
 
+# legacy key -> (path to its new home in `data`, benign default)
+_USER_LEGACY_BACKFILL = {
+    "created_at": (("core", "created_at"), ""),
+    "name": (("core", "name"), ""),
+    "screen_name": (("core", "screen_name"), ""),
+    "profile_image_url_https": (("avatar", "image_url"), ""),
+    "location": (("location", "location"), ""),
+    "description": (("profile_bio", "description"), ""),
+    "pinned_tweet_ids_str": (None, []),
+    "verified": (("verification", "verified"), False),
+    "possibly_sensitive": (None, False),
+    "can_dm": (("dm_permissions", "can_dm"), False),
+    "can_media_tag": (("media_permissions", "can_media_tag"), False),
+    "want_retweets": (None, False),
+    "default_profile": (None, False),
+    "default_profile_image": (None, False),
+    "has_custom_timelines": (None, False),
+    "followers_count": (None, 0),
+    "fast_followers_count": (None, 0),
+    "normal_followers_count": (None, 0),
+    "friends_count": (None, 0),
+    "favourites_count": (None, 0),
+    "listed_count": (None, 0),
+    "media_count": (None, 0),
+    "statuses_count": (None, 0),
+    "is_translator": (None, False),
+    "translator_type": (None, "none"),
+    "withheld_in_countries": (None, []),
+}
+
+_orig_user_init = _user.User.__init__
+
+
+def _dig(data: dict, path: tuple):
+    node = data
+    for part in path:
+        node = node.get(part) if isinstance(node, dict) else None
+    return node
+
+
+def _patched_user_init(self, client, data):
+    if isinstance(data, dict):
+        data.setdefault("is_blue_verified", False)
+        legacy = data.setdefault("legacy", {})
+        if isinstance(legacy, dict):
+            entities = legacy.setdefault("entities", {})
+            if isinstance(entities, dict):
+                desc = entities.setdefault("description", {})
+                if isinstance(desc, dict):
+                    desc.setdefault("urls", [])
+            for key, (path, default) in _USER_LEGACY_BACKFILL.items():
+                if key not in legacy:
+                    value = _dig(data, path) if path else None
+                    legacy[key] = default if value is None else value
+    _orig_user_init(self, client, data)
+
+
 def apply() -> None:
     _t.ClientTransaction.get_indices = _get_indices
+    _user.User.__init__ = _patched_user_init
 
 
 apply()
