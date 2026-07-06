@@ -71,7 +71,11 @@ maps index → id for likes.
   Current feed persists via `persist_write_int(PERSIST_FEED, …)`.
 - **twikit is fragile**: it uses X's private GraphQL API and breaks every few
   weeks. Server catches upstream errors and returns `502` with `detail`. Fix =
-  `pip install -U twikit`, sometimes a fresh `python login.py`.
+  `pip install -U twikit`, sometimes a fresh `python login.py`. Known breakages
+  are patched at import time in `server/api/_twikit_patch.py` (login key
+  extraction, user-payload backfill) — a 502 whose `detail` is a bare quoted
+  key name (e.g. `"'urls'"`) means X dropped another field; add it to the
+  backfill table there.
 - **X session**: X blocks automated login behind Cloudflare, so `server/login.py`
   (never deployed) does NOT log in — it formats the `auth_token` + `ct0` cookies
   you copy from a logged-in x.com browser tab into the `X_COOKIES` env var. No

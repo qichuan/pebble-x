@@ -1,12 +1,12 @@
 {
-  "name": "Peep",
+  "name": "TweetFit",
   "author": "Zhang Qichuan",
   "version": "1.0.0",
   "keywords": ["pebble-app", "twitter", "pebble", "x"],
   "private": true,
   "dependencies": {},
   "pebble": {
-    "displayName": "Peep",
+    "displayName": "TweetFit",
     "uuid": "46056075-4bc7-4d0c-8c90-51e4bba892fd",
     "sdkVersion": "3",
     "enableMultiJS": true,
@@ -37,7 +37,14 @@
       "LIKE_RESULT"
     ],
     "resources": {
-      "media": []
+      "media": [
+        {
+          "menuIcon": true,
+          "type": "png",
+          "name": "IMAGE_MENU_ICON",
+          "file": "images/menu_icon.png"
+        }
+      ]
     }
   }
 }

@@ -47,7 +47,10 @@ async def timeline(feed: str = "following") -> dict:
             result = await client.get_timeline(count=20)
         else:
             result = await client.get_latest_timeline(count=20)
-        tweets = [tweet_to_dict(t) for t in list(result)[:MAX_TWEETS]]
+        # X mixes in pinned/promoted/thread items out of order; snowflake ids
+        # encode creation time, so sort newest-first before truncating.
+        ordered = sorted(result, key=lambda t: int(t.id), reverse=True)
+        tweets = [tweet_to_dict(t) for t in ordered[:MAX_TWEETS]]
     except Exception as e:  # twikit breakage, blocked IP, bad cookies, etc.
         raise HTTPException(status_code=502, detail=str(e))
     return {"feed": feed, "tweets": tweets}

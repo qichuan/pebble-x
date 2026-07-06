@@ -32,7 +32,8 @@ class FakeClient:
         pass
 
     async def get_latest_timeline(self, count=20):
-        return [FakeTweet(i, media=(i == 2)) for i in range(count)]
+        # Oldest-first on purpose: the endpoint must sort newest-first by id.
+        return [FakeTweet(i, media=(i == 17)) for i in range(count)]
 
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 100) for i in range(count)]
@@ -65,13 +66,15 @@ with mock.patch("_common.Client", FakeClient):
     b = r.json()
     assert r.status_code == 200 and b["feed"] == "following" and len(b["tweets"]) == 15, b
     assert b["tweets"][0]["handle"] == "janedev"
+    ids = [t["id"] for t in b["tweets"]]
+    assert ids == sorted(ids, key=int, reverse=True) and ids[0] == "1019", ids
     assert b["tweets"][2]["has_media"] is True and b["tweets"][0]["has_media"] is False
-    print("PASS  following -> 15 tweets, media flag, handle")
+    print("PASS  following -> 15 tweets newest-first, media flag, handle")
 
     r = client.get("/api/timeline?feed=foryou", headers=AUTH)
     b = r.json()
-    assert r.status_code == 200 and b["feed"] == "foryou" and b["tweets"][0]["id"] == "1100", b
-    print("PASS  foryou -> distinct feed")
+    assert r.status_code == 200 and b["feed"] == "foryou" and b["tweets"][0]["id"] == "1119", b
+    print("PASS  foryou -> distinct feed, newest-first")
 
     r = client.post("/api/like", json={"tweet_id": "1000"}, headers=AUTH)
     assert r.status_code == 200 and r.json()["ok"] is True, r.json()

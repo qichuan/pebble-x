@@ -99,9 +99,16 @@ app with a mocked twikit client.
 - **twikit breaks periodically** when X rotates its internal API. Fix with
   `pip install -U twikit` and redeploy; occasionally a new login (`python login.py`)
   is needed to refresh cookies.
-- **Login patch**: X's 2026-03-18 webpack change broke twikit 2.3.3 login
-  (`Couldn't get KEY_BYTE indices`). `api/_twikit_patch.py` fixes it at import time
+- **Runtime patches**: `api/_twikit_patch.py` fixes twikit 2.3.3 at import time
   (imported by `_common.py` and `login.py`), so we stay on the official PyPI package.
-  If login hits that error again, X changed the format once more — update the regexes
-  in that file (see d60/twikit issues #408 / PRs #410, #411).
+  It currently carries two fixes:
+  - *Login* — X's 2026-03-18 webpack change broke login (`Couldn't get KEY_BYTE
+    indices`). If that error returns, X changed the format again — update the
+    regexes in that file (see d60/twikit issues #408 / PRs #410, #411).
+  - *User parsing* — X's 2026-07 payload change dropped
+    `legacy.entities.description.urls` from timeline users (part of moving user
+    fields into `core`/`avatar`/…), so every timeline fetch 502'd with
+    `{"detail":"'urls'"}`. The patch backfills missing `legacy` keys. If the
+    timeline 502s again with a bare quoted key name as the detail, add that key
+    to the backfill table.
 - Keep `X_COOKIES` and `APP_TOKEN` secret — anyone with them can act as your X account.

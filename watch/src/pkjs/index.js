@@ -6,6 +6,7 @@
 var MAX_TWEETS = 15;
 var MAX_TEXT_BYTES = 437;   // must fit the watch-side buffer (TEXT_LEN 441)
 var MAX_AUTHOR_BYTES = 23;
+var CACHE_FRESH_MS = 10 * 60 * 1000;  // older caches are re-fetched in the background
 
 var STATUS_OK = 0;
 var STATUS_NOT_CONFIGURED = 1;
@@ -109,6 +110,9 @@ function likeTweet(feed, index, callback) {
 
 var s_sendQueue = [];
 var s_sending = false;
+// Bumped whenever the queue is replaced wholesale (new timeline batch) so a
+// callback from an in-flight send can't shift()/retry against the new queue.
+var s_sendGeneration = 0;
 
 function enqueue(message) {
   s_sendQueue.push(message);
@@ -118,12 +122,14 @@ function enqueue(message) {
 function sendNext() {
   if (s_sendQueue.length === 0) { s_sending = false; return; }
   s_sending = true;
+  var generation = s_sendGeneration;
   var message = s_sendQueue[0];
   var retried = false;
   Pebble.sendAppMessage(message, function () {
-    s_sendQueue.shift();
+    if (generation === s_sendGeneration) s_sendQueue.shift();
     sendNext();
   }, function () {
+    if (generation !== s_sendGeneration) return sendNext();
     if (!retried) {
       retried = true;
       setTimeout(sendNext, 250);
@@ -150,6 +156,7 @@ function timeAgo(iso) {
 }
 
 function sendTimeline(tweets) {
+  s_sendGeneration++;
   s_sendQueue = [];
   enqueue({ TWEET_COUNT: tweets.length, STATUS: STATUS_OK });
   tweets.forEach(function (t, i) {
@@ -178,7 +185,15 @@ function deliverTimeline(forceFetch, feed) {
   if (!serverConfigured()) return sendStatus(STATUS_NOT_CONFIGURED);
   var cache = loadJSON('cache_' + feed);
   if (!forceFetch && cache && cache.tweets && cache.tweets.length > 0) {
-    return sendTimeline(cache.tweets);
+    sendTimeline(cache.tweets);
+    // Stale-while-revalidate: quietly refresh an old cache. Errors stay
+    // silent - the user is already looking at usable cached tweets.
+    if (Date.now() - (cache.fetchedAt || 0) > CACHE_FRESH_MS) {
+      fetchTimeline(feed, function (err, tweets) {
+        if (!err && tweets.length > 0) sendTimeline(tweets);
+      });
+    }
+    return;
   }
   sendStatus(STATUS_FETCHING);
   fetchTimeline(feed, function (err, tweets) {

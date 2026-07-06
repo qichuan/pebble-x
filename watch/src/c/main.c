@@ -20,6 +20,13 @@
 #define STATUS_SERVER_ERROR 3
 #define STATUS_FETCHING 4
 
+// Closest Pebble 64-color match to X/Twitter blue #1DA1F2; black on B&W.
+#define ACCENT_COLOR PBL_IF_COLOR_ELSE(GColorVividCerulean, GColorBlack)
+
+// U+2764 heavy black heart — in Pebble's emoji set for regular (not bold) Gothic fonts.
+#define HEART "\xE2\x9D\xA4"
+#define HEART_COLOR PBL_IF_COLOR_ELSE(GColorRed, GColorBlack)
+
 typedef struct {
   char author[AUTHOR_LEN];
   char text[TEXT_LEN];
@@ -40,11 +47,18 @@ static MenuLayer *s_menu_layer;
 static TextLayer *s_status_layer;
 static char s_status_text[80];
 
+// Banner row carousel: cycles hint text while row 0 is highlighted.
+static int s_banner_page = 0;
+static AppTimer *s_banner_timer = NULL;
+
 static Window *s_detail_window;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_detail_header_layer;
 static TextLayer *s_detail_body_layer;
-static TextLayer *s_detail_footer_layer;
+static Layer *s_detail_footer_layer;  // custom-drawn: heart glyph is red, text isn't
+static const char *s_footer_pre;
+static bool s_footer_heart;
+static const char *s_footer_post;
 static bool s_detail_open = false;
 static int s_detail_index = -1;
 static char s_detail_header[AUTHOR_LEN + TIME_LEN + 8];
@@ -73,12 +87,43 @@ static void prv_set_status(const char *text) {
 
 // ---- Detail window ----
 
+static void prv_set_footer(const char *pre, bool heart, const char *post) {
+  s_footer_pre = pre;
+  s_footer_heart = heart;
+  s_footer_post = post;
+  if (s_detail_footer_layer) {
+    layer_mark_dirty(s_detail_footer_layer);
+  }
+}
+
+static void prv_footer_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  const GColor text_color = PBL_IF_COLOR_ELSE(GColorDarkGray, GColorBlack);
+  int x = 0;
+  const char *parts[] = { s_footer_pre, s_footer_heart ? HEART : NULL, s_footer_post };
+  for (int i = 0; i < 3; i++) {
+    if (!parts[i]) {
+      continue;
+    }
+    graphics_context_set_text_color(ctx, i == 1 ? HEART_COLOR : text_color);
+    graphics_draw_text(ctx, parts[i], font, GRect(x, -2, bounds.size.w - x, bounds.size.h),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    x += graphics_text_layout_get_content_size(parts[i], font, GRect(0, 0, bounds.size.w, 24),
+                                               GTextOverflowModeTrailingEllipsis,
+                                               GTextAlignmentLeft).w;
+  }
+}
+
 static void prv_update_detail_footer(void) {
   if (!s_detail_open || s_detail_index < 0) {
     return;
   }
-  text_layer_set_text(s_detail_footer_layer,
-                      s_tweets[s_detail_index].liked ? "<3 Liked" : "SELECT to like");
+  if (s_tweets[s_detail_index].liked) {
+    prv_set_footer(NULL, true, " Liked");
+  } else {
+    prv_set_footer("SELECT to ", true, NULL);
+  }
 }
 
 static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *context) {
@@ -89,7 +134,7 @@ static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *conte
   if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
     dict_write_int32(iter, MESSAGE_KEY_LIKE_INDEX, s_detail_index);
     app_message_outbox_send();
-    text_layer_set_text(s_detail_footer_layer, "Liking...");
+    prv_set_footer("Liking...", false, NULL);
   }
 }
 
@@ -113,26 +158,26 @@ static void prv_detail_window_load(Window *window) {
   });
   scroll_layer_set_click_config_onto_window(s_scroll_layer, window);
 
-  s_detail_header_layer = text_layer_create(GRect(margin, 2, width, 22));
+  s_detail_header_layer = text_layer_create(GRect(margin, 2, width, 24));
   text_layer_set_font(s_detail_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_color(s_detail_header_layer, ACCENT_COLOR);
   text_layer_set_text(s_detail_header_layer, s_detail_header);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_header_layer));
 
-  GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
   GSize body_size = graphics_text_layout_get_content_size(
       t->text, body_font, GRect(0, 0, width, 2000), GTextOverflowModeWordWrap, GTextAlignmentLeft);
-  s_detail_body_layer = text_layer_create(GRect(margin, 26, width, body_size.h + 6));
+  s_detail_body_layer = text_layer_create(GRect(margin, 28, width, body_size.h + 8));
   text_layer_set_font(s_detail_body_layer, body_font);
   text_layer_set_text(s_detail_body_layer, t->text);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_body_layer));
 
-  const int footer_y = 26 + body_size.h + 10;
-  s_detail_footer_layer = text_layer_create(GRect(margin, footer_y, width, 20));
-  text_layer_set_font(s_detail_footer_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-  text_layer_set_text_color(s_detail_footer_layer, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorBlack));
-  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_footer_layer));
+  const int footer_y = 28 + body_size.h + 12;
+  s_detail_footer_layer = layer_create(GRect(margin, footer_y, width, 24));
+  layer_set_update_proc(s_detail_footer_layer, prv_footer_update_proc);
+  scroll_layer_add_child(s_scroll_layer, s_detail_footer_layer);
 
-  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, footer_y + 28));
+  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, footer_y + 32));
   layer_add_child(window_layer, scroll_layer_get_layer(s_scroll_layer));
 
   s_detail_open = true;
@@ -143,7 +188,8 @@ static void prv_detail_window_unload(Window *window) {
   s_detail_open = false;
   text_layer_destroy(s_detail_header_layer);
   text_layer_destroy(s_detail_body_layer);
-  text_layer_destroy(s_detail_footer_layer);
+  layer_destroy(s_detail_footer_layer);
+  s_detail_footer_layer = NULL;
   scroll_layer_destroy(s_scroll_layer);
   window_destroy(window);
   s_detail_window = NULL;
@@ -183,24 +229,32 @@ static void prv_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t sec
                             void *context) {
   char title[24];
   snprintf(title, sizeof(title), "%s timeline", prv_feed_name(s_feed));
-  menu_cell_basic_header_draw(ctx, cell_layer, title);
+  GRect bounds = layer_get_bounds(cell_layer);
+  graphics_context_set_text_color(ctx, ACCENT_COLOR);
+  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(4, -2, bounds.size.w - 8, MENU_CELL_BASIC_HEADER_HEIGHT),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  return cell_index->row == 0 ? 34 : 56;
+  return cell_index->row == 0 ? 34 : 68;
 }
 
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
   GRect bounds = layer_get_bounds(cell_layer);
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
-  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
 
   if (cell_index->row == 0) {
-    char toggle[28];
-    snprintf(toggle, sizeof(toggle), "Switch to %s",
-             prv_feed_name(s_feed == FEED_FORYOU ? FEED_FOLLOWING : FEED_FORYOU));
-    graphics_draw_text(ctx, toggle, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(6, 2, bounds.size.w - 12, 28), GTextOverflowModeTrailingEllipsis,
+    char banner[28];
+    if (s_banner_page == 0) {
+      snprintf(banner, sizeof(banner), "SELECT: %s",
+               prv_feed_name(s_feed == FEED_FORYOU ? FEED_FOLLOWING : FEED_FORYOU));
+    } else {
+      snprintf(banner, sizeof(banner), "Hold to refresh");
+    }
+    graphics_context_set_text_color(ctx, highlighted ? GColorWhite : ACCENT_COLOR);
+    graphics_draw_text(ctx, banner, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(6, 6, bounds.size.w - 12, 20), GTextOverflowModeTrailingEllipsis,
                        GTextAlignmentCenter, NULL);
     return;
   }
@@ -219,12 +273,35 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   snippet[j] = '\0';
   prv_fix_utf8_tail(snippet);
 
-  graphics_draw_text(ctx, author_line, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     GRect(6, 0, bounds.size.w - 12, 16), GTextOverflowModeTrailingEllipsis,
+  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : ACCENT_COLOR);
+  graphics_draw_text(ctx, author_line, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(6, -2, bounds.size.w - 12, 20), GTextOverflowModeTrailingEllipsis,
                      GTextAlignmentLeft, NULL);
-  graphics_draw_text(ctx, snippet, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(6, 16, bounds.size.w - 12, 36), GTextOverflowModeTrailingEllipsis,
+  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
+  graphics_draw_text(ctx, snippet, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(6, 18, bounds.size.w - 12, 46), GTextOverflowModeTrailingEllipsis,
                      GTextAlignmentLeft, NULL);
+}
+
+static void prv_banner_tick(void *context) {
+  s_banner_page = !s_banner_page;
+  s_banner_timer = app_timer_register(2000, prv_banner_tick, NULL);
+  menu_layer_reload_data(s_menu_layer);
+}
+
+static void prv_banner_carousel(bool running) {
+  if (running && !s_banner_timer) {
+    s_banner_timer = app_timer_register(2000, prv_banner_tick, NULL);
+  } else if (!running && s_banner_timer) {
+    app_timer_cancel(s_banner_timer);
+    s_banner_timer = NULL;
+    s_banner_page = 0;
+  }
+}
+
+static void prv_selection_changed(MenuLayer *menu_layer, MenuIndex new_index,
+                                  MenuIndex old_index, void *context) {
+  prv_banner_carousel(new_index.row == 0);
 }
 
 static void prv_toggle_feed(void) {
@@ -264,7 +341,9 @@ static void prv_timeline_window_load(Window *window) {
     .draw_row = prv_draw_row,
     .select_click = prv_select_click,
     .select_long_click = prv_select_long_click,
+    .selection_changed = prv_selection_changed,
   });
+  menu_layer_set_highlight_colors(s_menu_layer, GColorBlack, GColorWhite);
   menu_layer_set_click_config_onto_window(s_menu_layer, window);
   layer_add_child(window_layer, menu_layer_get_layer(s_menu_layer));
 
@@ -275,9 +354,12 @@ static void prv_timeline_window_load(Window *window) {
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
   layer_add_child(window_layer, text_layer_get_layer(s_status_layer));
   prv_set_status("Loading...");
+
+  prv_banner_carousel(true);  // initial selection is row 0
 }
 
 static void prv_timeline_window_unload(Window *window) {
+  prv_banner_carousel(false);
   text_layer_destroy(s_status_layer);
   s_status_layer = NULL;
   menu_layer_destroy(s_menu_layer);
@@ -368,7 +450,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       menu_layer_reload_data(s_menu_layer);
       prv_update_detail_footer();
     } else if (s_detail_open) {
-      text_layer_set_text(s_detail_footer_layer, "Like failed");
+      prv_set_footer("Like failed", false, NULL);
     }
   }
 }
