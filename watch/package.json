@@ -58,6 +58,21 @@
           "type": "png",
           "name": "IMAGE_MENU_ICON",
           "file": "images/menu_icon.png"
+        },
+        {
+          "type": "png",
+          "name": "IMAGE_HEART_ICON",
+          "file": "images/icon_heart.png"
+        },
+        {
+          "type": "png",
+          "name": "IMAGE_IMG_ICON",
+          "file": "images/icon_img.png"
+        },
+        {
+          "type": "png",
+          "name": "IMAGE_RETWEET_ICON",
+          "file": "images/icon_retweet.png"
         }
       ]
     }

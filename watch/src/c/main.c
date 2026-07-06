@@ -31,6 +31,10 @@
 
 #define IMAGE_MAX_BYTES (32 * 1024)
 
+#define ACTION_ICON_SIZE 25
+#define ACTION_ICON_MARGIN 8
+#define ACTION_OVERLAY_WIDTH (ACTION_ICON_SIZE + ACTION_ICON_MARGIN * 2)
+
 // Closest Pebble 64-color match to X/Twitter blue #1DA1F2; black on B&W.
 #define ACCENT_COLOR PBL_IF_COLOR_ELSE(GColorVividCerulean, GColorBlack)
 
@@ -67,16 +71,13 @@ static TextLayer *s_detail_body_layer;
 static int s_detail_index = -1;
 static char s_detail_header[AUTHOR_LEN + TIME_LEN + 8];
 
-static Window *s_action_window;
-static TextLayer *s_action_header_layer;
-static TextLayer *s_action_up_layer;
-static TextLayer *s_action_select_layer;
-static TextLayer *s_action_down_layer;
-static TextLayer *s_action_status_layer;
+static Layer *s_action_overlay_layer;
 static bool s_action_open = false;
 static int s_action_index = -1;
-static char s_action_header[AUTHOR_LEN + 16];
-static char s_action_status[40];
+static bool s_action_show_image = false;
+static GBitmap *s_action_retweet_bitmap;
+static GBitmap *s_action_like_bitmap;
+static GBitmap *s_action_image_bitmap;
 
 static Window *s_image_window;
 static BitmapLayer *s_image_bitmap_layer;
@@ -94,6 +95,12 @@ static int s_image_request_id = 0;
 
 static void prv_send_cmd(int cmd);
 static void prv_show_action(int index);
+static void prv_hide_action(void);
+static void prv_action_retweet(void);
+static void prv_action_like(void);
+static void prv_action_images(void);
+static void prv_action_set_labels(void);
+static void prv_action_overlay_update_proc(Layer *layer, GContext *ctx);
 static void prv_show_image(int index);
 
 // Trim a truncated UTF-8 string so it doesn't end mid-sequence
@@ -118,14 +125,47 @@ static void prv_set_status(const char *text) {
 
 // ---- Detail window ----
 
+static void prv_detail_up_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_action_open) {
+    if (!click_recognizer_is_repeating(recognizer)) {
+      prv_action_retweet();
+    }
+    return;
+  }
+  scroll_layer_scroll_up_click_handler(recognizer, s_scroll_layer);
+}
+
+static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_action_open) {
+    if (!click_recognizer_is_repeating(recognizer)) {
+      prv_action_images();
+    }
+    return;
+  }
+  scroll_layer_scroll_down_click_handler(recognizer, s_scroll_layer);
+}
+
 static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_detail_index >= 0) {
+  if (s_action_open) {
+    prv_action_like();
+  } else if (s_detail_index >= 0) {
     prv_show_action(s_detail_index);
   }
 }
 
+static void prv_detail_back_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_action_open) {
+    prv_hide_action();
+  } else {
+    window_stack_pop(true);
+  }
+}
+
 static void prv_detail_click_config(void *context) {
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, 100, prv_detail_up_handler);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, prv_detail_down_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_detail_select_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, prv_detail_back_handler);
 }
 
 static void prv_detail_window_load(Window *window) {
@@ -161,9 +201,27 @@ static void prv_detail_window_load(Window *window) {
   scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, 28 + body_size.h + 16));
   layer_add_child(window_layer, scroll_layer_get_layer(s_scroll_layer));
 
+  s_action_overlay_layer = layer_create(GRect(bounds.size.w - ACTION_OVERLAY_WIDTH, 0,
+                                              ACTION_OVERLAY_WIDTH, bounds.size.h));
+  layer_set_update_proc(s_action_overlay_layer, prv_action_overlay_update_proc);
+  layer_set_hidden(s_action_overlay_layer, true);
+  layer_add_child(window_layer, s_action_overlay_layer);
+
+  s_action_retweet_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_RETWEET_ICON);
+  s_action_like_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_HEART_ICON);
+  s_action_image_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_IMG_ICON);
 }
 
 static void prv_detail_window_unload(Window *window) {
+  prv_hide_action();
+  gbitmap_destroy(s_action_retweet_bitmap);
+  gbitmap_destroy(s_action_like_bitmap);
+  gbitmap_destroy(s_action_image_bitmap);
+  s_action_retweet_bitmap = NULL;
+  s_action_like_bitmap = NULL;
+  s_action_image_bitmap = NULL;
+  layer_destroy(s_action_overlay_layer);
+  s_action_overlay_layer = NULL;
   text_layer_destroy(s_detail_header_layer);
   text_layer_destroy(s_detail_body_layer);
   scroll_layer_destroy(s_scroll_layer);
@@ -181,7 +239,7 @@ static void prv_show_detail(int index) {
   window_stack_push(s_detail_window, true);
 }
 
-// ---- Action window ----
+// ---- Action overlay ----
 
 static bool prv_action_has_images(void) {
   return PBL_IF_COLOR_ELSE(
@@ -190,40 +248,72 @@ static bool prv_action_has_images(void) {
       false);
 }
 
-static void prv_action_set_status(const char *text) {
-  snprintf(s_action_status, sizeof(s_action_status), "%s", text ? text : "");
-  if (s_action_status_layer) {
-    text_layer_set_text(s_action_status_layer, s_action_status);
-    layer_set_hidden(text_layer_get_layer(s_action_status_layer), s_action_status[0] == '\0');
+static void prv_action_mark_dirty(void) {
+  if (s_action_overlay_layer) {
+    layer_mark_dirty(s_action_overlay_layer);
   }
+}
+
+static void prv_action_set_retweet_text(const char *text) {
+  (void) text;
+  prv_action_mark_dirty();
+}
+
+static void prv_action_set_like_text(const char *text) {
+  (void) text;
+  prv_action_mark_dirty();
 }
 
 static void prv_action_set_labels(void) {
   if (s_action_index < 0 || s_action_index >= s_tweet_count) {
     return;
   }
-  Tweet *t = &s_tweets[s_action_index];
-  if (s_action_up_layer) {
-    text_layer_set_text(s_action_up_layer, "UP Retweet");
+  s_action_show_image = prv_action_has_images();
+  prv_action_mark_dirty();
+}
+
+static void prv_action_draw_icon(GContext *ctx, GBitmap *bitmap, int center_y, int width) {
+  if (!bitmap) {
+    return;
   }
-  if (s_action_select_layer) {
-    text_layer_set_text(s_action_select_layer, t->liked ? "SELECT Liked" : "SELECT Like");
+  GSize size = gbitmap_get_bounds(bitmap).size;
+  int x = (width - size.w) / 2;
+  int y = center_y - size.h / 2;
+  graphics_draw_bitmap_in_rect(ctx, bitmap, GRect(x, y, size.w, size.h));
+}
+
+static void prv_action_overlay_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+  int top_center = bounds.size.h / 5;
+  int middle_center = bounds.size.h / 2;
+  int bottom_center = bounds.size.h - top_center;
+  prv_action_draw_icon(ctx, s_action_retweet_bitmap, top_center, bounds.size.w);
+  prv_action_draw_icon(ctx, s_action_like_bitmap, middle_center, bounds.size.w);
+  if (s_action_show_image) {
+    prv_action_draw_icon(ctx, s_action_image_bitmap, bottom_center, bounds.size.w);
   }
-  if (s_action_down_layer) {
-    if (prv_action_has_images()) {
-      static char image_label[24];
-      if (t->media_count > 1) {
-        snprintf(image_label, sizeof(image_label), "DOWN Images %d", t->media_count);
-      } else {
-        snprintf(image_label, sizeof(image_label), "DOWN Image");
-      }
-      text_layer_set_text(s_action_down_layer, image_label);
-      layer_set_hidden(text_layer_get_layer(s_action_down_layer), false);
-    } else {
-      text_layer_set_text(s_action_down_layer, "");
-      layer_set_hidden(text_layer_get_layer(s_action_down_layer), true);
-    }
+}
+
+static void prv_hide_action(void) {
+  s_action_open = false;
+  s_action_index = -1;
+  s_action_show_image = false;
+  if (s_action_overlay_layer) {
+    layer_set_hidden(s_action_overlay_layer, true);
   }
+}
+
+static void prv_show_action(int index) {
+  if (!s_action_overlay_layer || index < 0 || index >= s_tweet_count) {
+    return;
+  }
+  s_action_index = index;
+  s_action_open = true;
+  prv_action_set_labels();
+  layer_set_hidden(s_action_overlay_layer, false);
 }
 
 static bool prv_send_index_message(uint32_t key, int index) {
@@ -236,124 +326,36 @@ static bool prv_send_index_message(uint32_t key, int index) {
   return true;
 }
 
-static void prv_action_up_handler(ClickRecognizerRef recognizer, void *context) {
+static void prv_action_retweet(void) {
   if (s_action_index < 0 || s_action_index >= s_tweet_count) {
     return;
   }
   if (prv_send_index_message(MESSAGE_KEY_RETWEET_INDEX, s_action_index)) {
-    prv_action_set_status("Retweeting...");
+    prv_action_set_retweet_text("retweeting...");
   } else {
-    prv_action_set_status("Phone busy.");
+    prv_action_set_retweet_text("phone busy");
   }
 }
 
-static void prv_action_select_handler(ClickRecognizerRef recognizer, void *context) {
+static void prv_action_like(void) {
   if (s_action_index < 0 || s_action_index >= s_tweet_count) {
     return;
   }
   if (s_tweets[s_action_index].liked) {
-    prv_action_set_status("Already liked.");
+    prv_action_set_like_text("liked");
     return;
   }
   if (prv_send_index_message(MESSAGE_KEY_LIKE_INDEX, s_action_index)) {
-    prv_action_set_status("Liking...");
+    prv_action_set_like_text("liking...");
   } else {
-    prv_action_set_status("Phone busy.");
+    prv_action_set_like_text("phone busy");
   }
 }
 
-static void prv_action_down_handler(ClickRecognizerRef recognizer, void *context) {
+static void prv_action_images(void) {
   if (prv_action_has_images()) {
     prv_show_image(s_action_index);
   }
-}
-
-static void prv_action_click_config(void *context) {
-  window_single_click_subscribe(BUTTON_ID_UP, prv_action_up_handler);
-  window_single_click_subscribe(BUTTON_ID_SELECT, prv_action_select_handler);
-  if (prv_action_has_images()) {
-    window_single_click_subscribe(BUTTON_ID_DOWN, prv_action_down_handler);
-  }
-}
-
-static void prv_style_action_text(TextLayer *layer, GFont font, GColor color,
-                                  GTextAlignment align) {
-  text_layer_set_background_color(layer, GColorClear);
-  text_layer_set_text_color(layer, color);
-  text_layer_set_font(layer, font);
-  text_layer_set_text_alignment(layer, align);
-  text_layer_set_overflow_mode(layer, GTextOverflowModeTrailingEllipsis);
-}
-
-static void prv_action_window_load(Window *window) {
-  Layer *window_layer = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(window_layer);
-  const int margin = PBL_IF_ROUND_ELSE(18, 8);
-  const int width = bounds.size.w - margin * 2;
-
-  s_action_open = true;
-  Tweet *t = &s_tweets[s_action_index];
-  snprintf(s_action_header, sizeof(s_action_header), "@%s", t->author);
-
-  s_action_header_layer = text_layer_create(GRect(margin, 4, width, 24));
-  prv_style_action_text(s_action_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                        ACCENT_COLOR, GTextAlignmentCenter);
-  text_layer_set_text(s_action_header_layer, s_action_header);
-  layer_add_child(window_layer, text_layer_get_layer(s_action_header_layer));
-
-  s_action_up_layer = text_layer_create(GRect(margin, 34, width, 28));
-  prv_style_action_text(s_action_up_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                        GColorBlack, GTextAlignmentCenter);
-  layer_add_child(window_layer, text_layer_get_layer(s_action_up_layer));
-
-  s_action_select_layer = text_layer_create(GRect(margin, 66, width, 28));
-  prv_style_action_text(s_action_select_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                        GColorBlack, GTextAlignmentCenter);
-  layer_add_child(window_layer, text_layer_get_layer(s_action_select_layer));
-
-  s_action_down_layer = text_layer_create(GRect(margin, 98, width, 28));
-  prv_style_action_text(s_action_down_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                        GColorBlack, GTextAlignmentCenter);
-  layer_add_child(window_layer, text_layer_get_layer(s_action_down_layer));
-
-  s_action_status_layer = text_layer_create(GRect(margin, bounds.size.h - 30, width, 24));
-  prv_style_action_text(s_action_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                        PBL_IF_COLOR_ELSE(GColorDarkGray, GColorBlack), GTextAlignmentCenter);
-  layer_add_child(window_layer, text_layer_get_layer(s_action_status_layer));
-
-  prv_action_set_labels();
-  prv_action_set_status("");
-}
-
-static void prv_action_window_unload(Window *window) {
-  s_action_open = false;
-  text_layer_destroy(s_action_header_layer);
-  s_action_header_layer = NULL;
-  text_layer_destroy(s_action_up_layer);
-  s_action_up_layer = NULL;
-  text_layer_destroy(s_action_select_layer);
-  s_action_select_layer = NULL;
-  text_layer_destroy(s_action_down_layer);
-  s_action_down_layer = NULL;
-  text_layer_destroy(s_action_status_layer);
-  s_action_status_layer = NULL;
-  s_action_index = -1;
-  window_destroy(window);
-  s_action_window = NULL;
-}
-
-static void prv_show_action(int index) {
-  if (s_action_window || index < 0 || index >= s_tweet_count) {
-    return;
-  }
-  s_action_index = index;
-  s_action_window = window_create();
-  window_set_window_handlers(s_action_window, (WindowHandlers) {
-    .load = prv_action_window_load,
-    .unload = prv_action_window_unload,
-  });
-  window_set_click_config_provider(s_action_window, prv_action_click_config);
-  window_stack_push(s_action_window, true);
 }
 
 // ---- Image window ----
@@ -882,13 +884,12 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       vibes_short_pulse();
       menu_layer_reload_data(s_menu_layer);
       if (s_action_open && s_action_index == index) {
-        prv_action_set_labels();
-        prv_action_set_status("Liked.");
+        prv_action_set_like_text("liked");
       }
     } else {
       int failed_index = -index - 1;
       if (s_action_open && failed_index == s_action_index) {
-        prv_action_set_status("Like failed.");
+        prv_action_set_like_text("like failed");
       }
     }
   }
@@ -898,12 +899,12 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     if (index >= 0 && index < s_tweet_count) {
       vibes_short_pulse();
       if (s_action_open && s_action_index == index) {
-        prv_action_set_status("Retweeted.");
+        prv_action_set_retweet_text("retweeted");
       }
     } else {
       int failed_index = -index - 1;
       if (s_action_open && failed_index == s_action_index) {
-        prv_action_set_status("Retweet failed.");
+        prv_action_set_retweet_text("retweet failed");
       }
     }
   }
