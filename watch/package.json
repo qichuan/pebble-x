@@ -73,6 +73,16 @@
           "type": "png",
           "name": "IMAGE_RETWEET_ICON",
           "file": "images/icon_retweet.png"
+        },
+        {
+          "type": "png",
+          "name": "IMAGE_SWAP_ICON",
+          "file": "images/icon_swap.png"
+        },
+        {
+          "type": "png",
+          "name": "IMAGE_REFRESH_ICON",
+          "file": "images/icon_refresh.png"
         }
       ]
     }

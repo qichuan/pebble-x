@@ -60,9 +60,15 @@ static MenuLayer *s_menu_layer;
 static TextLayer *s_status_layer;
 static char s_status_text[80];
 
-// Banner row carousel: cycles hint text while row 0 is highlighted.
-static int s_banner_page = 0;
-static AppTimer *s_banner_timer = NULL;
+// Timeline action overlay (opened from the feed status row): switch feed / refresh.
+static Layer *s_feed_overlay_layer;
+static GBitmap *s_swap_bitmap;
+static GBitmap *s_refresh_bitmap;
+
+// Refresh-in-progress indicator on the feed status row (animated dots).
+static bool s_refreshing = false;
+static int s_refresh_dots = 1;
+static AppTimer *s_refresh_timer = NULL;
 
 static Window *s_detail_window;
 static ScrollLayer *s_scroll_layer;
@@ -129,6 +135,7 @@ static void prv_detail_up_handler(ClickRecognizerRef recognizer, void *context) 
   if (s_action_open) {
     if (!click_recognizer_is_repeating(recognizer)) {
       prv_action_retweet();
+      prv_hide_action();
     }
     return;
   }
@@ -139,6 +146,7 @@ static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context
   if (s_action_open) {
     if (!click_recognizer_is_repeating(recognizer)) {
       prv_action_images();
+      prv_hide_action();
     }
     return;
   }
@@ -148,6 +156,7 @@ static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context
 static void prv_detail_select_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_action_open) {
     prv_action_like();
+    prv_hide_action();
   } else if (s_detail_index >= 0) {
     prv_show_action(s_detail_index);
   }
@@ -515,38 +524,48 @@ static void prv_show_image(int index) {
 }
 
 // ---- Timeline window ----
-// Row 0 is a feed toggle; tweets occupy rows 1..count. A section header shows
-// the current feed name.
+// Row 0 is a status row showing the current feed; SELECT on it opens the feed
+// action overlay (switch feed / refresh). Tweets occupy rows 1..count.
 
 static const char *prv_feed_name(int feed) {
   return feed == FEED_FORYOU ? "For You" : "Following";
 }
 
 static int prv_row_to_tweet(int row) {
-  return row - 1;  // row 0 is the toggle
+  return row - 1;  // row 0 is the feed status row
 }
 
 static uint16_t prv_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *context) {
   return s_tweet_count + 1;
 }
 
-static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *context) {
-  return MENU_CELL_BASIC_HEADER_HEIGHT;
-}
-
-static void prv_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index,
-                            void *context) {
-  char title[24];
-  snprintf(title, sizeof(title), "%s timeline", prv_feed_name(s_feed));
-  GRect bounds = layer_get_bounds(cell_layer);
-  graphics_context_set_text_color(ctx, ACCENT_COLOR);
-  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     GRect(4, -2, bounds.size.w - 8, MENU_CELL_BASIC_HEADER_HEIGHT),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-}
-
 static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   return cell_index->row == 0 ? 34 : 68;
+}
+
+static void prv_refresh_tick(void *context) {
+  s_refresh_dots = (s_refresh_dots % 3) + 1;
+  s_refresh_timer = app_timer_register(400, prv_refresh_tick, NULL);
+  if (s_menu_layer) {
+    layer_mark_dirty(menu_layer_get_layer(s_menu_layer));
+  }
+}
+
+static void prv_set_refreshing(bool refreshing) {
+  if (refreshing == s_refreshing) {
+    return;
+  }
+  s_refreshing = refreshing;
+  s_refresh_dots = 1;
+  if (refreshing) {
+    s_refresh_timer = app_timer_register(400, prv_refresh_tick, NULL);
+  } else if (s_refresh_timer) {
+    app_timer_cancel(s_refresh_timer);
+    s_refresh_timer = NULL;
+  }
+  if (s_menu_layer) {
+    layer_mark_dirty(menu_layer_get_layer(s_menu_layer));
+  }
 }
 
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
@@ -554,17 +573,24 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
 
   if (cell_index->row == 0) {
-    char banner[28];
-    if (s_banner_page == 0) {
-      snprintf(banner, sizeof(banner), "SELECT: %s",
-               prv_feed_name(s_feed == FEED_FORYOU ? FEED_FOLLOWING : FEED_FORYOU));
-    } else {
-      snprintf(banner, sizeof(banner), "Hold to refresh");
+    // Status row: shows the CURRENT feed; SELECT opens the action overlay.
+    // While a refresh is in flight it shows animated "Refreshing..." instead.
+    GColor fg = highlighted ? GColorWhite : ACCENT_COLOR;
+    graphics_context_set_fill_color(ctx, fg);
+    graphics_fill_circle(ctx, GPoint(13, bounds.size.h / 2 - 1), 3);
+    graphics_context_set_text_color(ctx, fg);
+    char label[16];
+    snprintf(label, sizeof(label), "%s%.*s",
+             s_refreshing ? "Refreshing" : prv_feed_name(s_feed),
+             s_refreshing ? s_refresh_dots : 0, "...");
+    graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(22, 2, bounds.size.w - 44, 24), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentLeft, NULL);
+    if (!s_refreshing) {
+      graphics_draw_text(ctx, ">", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                         GRect(bounds.size.w - 20, 2, 14, 24), GTextOverflowModeTrailingEllipsis,
+                         GTextAlignmentRight, NULL);
     }
-    graphics_context_set_text_color(ctx, highlighted ? GColorWhite : ACCENT_COLOR);
-    graphics_draw_text(ctx, banner, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(6, 6, bounds.size.w - 12, 20), GTextOverflowModeTrailingEllipsis,
-                       GTextAlignmentCenter, NULL);
     return;
   }
 
@@ -592,27 +618,6 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
                      GTextAlignmentLeft, NULL);
 }
 
-static void prv_banner_tick(void *context) {
-  s_banner_page = !s_banner_page;
-  s_banner_timer = app_timer_register(2000, prv_banner_tick, NULL);
-  menu_layer_reload_data(s_menu_layer);
-}
-
-static void prv_banner_carousel(bool running) {
-  if (running && !s_banner_timer) {
-    s_banner_timer = app_timer_register(2000, prv_banner_tick, NULL);
-  } else if (!running && s_banner_timer) {
-    app_timer_cancel(s_banner_timer);
-    s_banner_timer = NULL;
-    s_banner_page = 0;
-  }
-}
-
-static void prv_selection_changed(MenuLayer *menu_layer, MenuIndex new_index,
-                                  MenuIndex old_index, void *context) {
-  prv_banner_carousel(new_index.row == 0);
-}
-
 static void prv_toggle_feed(void) {
   s_feed = (s_feed == FEED_FORYOU) ? FEED_FOLLOWING : FEED_FORYOU;
   persist_write_int(PERSIST_FEED, s_feed);
@@ -624,9 +629,74 @@ static void prv_toggle_feed(void) {
   prv_send_cmd(CMD_FETCH);  // pkjs sends cached feed instantly if present
 }
 
+// ---- Feed action overlay ----
+// Same right-edge strip as the detail window: UP = switch feed, SELECT = refresh.
+
+// The timeline's normal click config wraps the menu layer's provider so BACK is
+// always explicitly bound to "exit app". Relying on the implicit default doesn't
+// work here: once the overlay subscribes BACK, restoring the menu provider leaves
+// that stale subscription in place (the menu provider never touches BACK).
+static ClickConfigProvider s_menu_click_config;
+static void *s_menu_click_context;
+
+static void prv_timeline_back_handler(ClickRecognizerRef recognizer, void *context) {
+  window_stack_pop(true);  // timeline is the root window, so this exits the app
+}
+
+static void prv_timeline_click_config(void *context) {
+  s_menu_click_config(context);
+  window_single_click_subscribe(BUTTON_ID_BACK, prv_timeline_back_handler);
+}
+
+static void prv_feed_overlay_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  prv_action_draw_icon(ctx, s_swap_bitmap, bounds.size.h / 5, bounds.size.w);
+  prv_action_draw_icon(ctx, s_refresh_bitmap, bounds.size.h / 2, bounds.size.w);
+}
+
+static void prv_hide_feed_action(void) {
+  if (s_feed_overlay_layer) {
+    layer_set_hidden(s_feed_overlay_layer, true);
+  }
+  window_set_click_config_provider_with_context(s_timeline_window, prv_timeline_click_config,
+                                                s_menu_click_context);
+}
+
+static void prv_feed_action_up_handler(ClickRecognizerRef recognizer, void *context) {
+  prv_hide_feed_action();
+  prv_toggle_feed();
+}
+
+static void prv_feed_action_select_handler(ClickRecognizerRef recognizer, void *context) {
+  prv_hide_feed_action();
+  prv_set_status("Refreshing...");
+  prv_set_refreshing(true);
+  prv_send_cmd(CMD_REFRESH);
+}
+
+static void prv_feed_action_back_handler(ClickRecognizerRef recognizer, void *context) {
+  prv_hide_feed_action();
+}
+
+static void prv_feed_action_click_config(void *context) {
+  window_single_click_subscribe(BUTTON_ID_UP, prv_feed_action_up_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_feed_action_select_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, prv_feed_action_back_handler);
+}
+
+static void prv_show_feed_action(void) {
+  if (!s_feed_overlay_layer) {
+    return;
+  }
+  layer_set_hidden(s_feed_overlay_layer, false);
+  window_set_click_config_provider(s_timeline_window, prv_feed_action_click_config);
+}
+
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   if (cell_index->row == 0) {
-    prv_toggle_feed();
+    prv_show_feed_action();
   } else {
     prv_show_detail(prv_row_to_tweet(cell_index->row));
   }
@@ -634,6 +704,7 @@ static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void 
 
 static void prv_select_long_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   prv_set_status("Refreshing...");
+  prv_set_refreshing(true);
   prv_send_cmd(CMD_REFRESH);
 }
 
@@ -644,16 +715,18 @@ static void prv_timeline_window_load(Window *window) {
   s_menu_layer = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_menu_layer, NULL, (MenuLayerCallbacks) {
     .get_num_rows = prv_get_num_rows,
-    .get_header_height = prv_get_header_height,
-    .draw_header = prv_draw_header,
     .get_cell_height = prv_get_cell_height,
     .draw_row = prv_draw_row,
     .select_click = prv_select_click,
     .select_long_click = prv_select_long_click,
-    .selection_changed = prv_selection_changed,
   });
   menu_layer_set_highlight_colors(s_menu_layer, GColorBlack, GColorWhite);
   menu_layer_set_click_config_onto_window(s_menu_layer, window);
+  // Wrap the menu's provider so BACK always exits (see prv_timeline_click_config).
+  s_menu_click_config = window_get_click_config_provider(window);
+  s_menu_click_context = window_get_click_config_context(window);
+  window_set_click_config_provider_with_context(window, prv_timeline_click_config,
+                                                s_menu_click_context);
   layer_add_child(window_layer, menu_layer_get_layer(s_menu_layer));
 
   const int margin = PBL_IF_ROUND_ELSE(16, 8);
@@ -664,11 +737,24 @@ static void prv_timeline_window_load(Window *window) {
   layer_add_child(window_layer, text_layer_get_layer(s_status_layer));
   prv_set_status("Loading...");
 
-  prv_banner_carousel(true);  // initial selection is row 0
+  s_feed_overlay_layer = layer_create(GRect(bounds.size.w - ACTION_OVERLAY_WIDTH, 0,
+                                            ACTION_OVERLAY_WIDTH, bounds.size.h));
+  layer_set_update_proc(s_feed_overlay_layer, prv_feed_overlay_update_proc);
+  layer_set_hidden(s_feed_overlay_layer, true);
+  layer_add_child(window_layer, s_feed_overlay_layer);
+
+  s_swap_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_SWAP_ICON);
+  s_refresh_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_REFRESH_ICON);
 }
 
 static void prv_timeline_window_unload(Window *window) {
-  prv_banner_carousel(false);
+  prv_set_refreshing(false);
+  gbitmap_destroy(s_swap_bitmap);
+  gbitmap_destroy(s_refresh_bitmap);
+  s_swap_bitmap = NULL;
+  s_refresh_bitmap = NULL;
+  layer_destroy(s_feed_overlay_layer);
+  s_feed_overlay_layer = NULL;
   text_layer_destroy(s_status_layer);
   s_status_layer = NULL;
   menu_layer_destroy(s_menu_layer);
@@ -812,17 +898,22 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     switch (t->value->int32) {
       case STATUS_NOT_CONFIGURED:
         prv_set_status("Not set up.\nOpen the app settings on your phone.");
+        prv_set_refreshing(false);
         break;
       case STATUS_NETWORK_ERROR:
         prv_set_status("Network error.\nHold SELECT to retry.");
+        prv_set_refreshing(false);
         break;
       case STATUS_SERVER_ERROR:
         prv_set_status("Server error.\nHold SELECT to retry.");
+        prv_set_refreshing(false);
         break;
       case STATUS_FETCHING:
         prv_set_status("Refreshing...");
+        prv_set_refreshing(true);
         break;
       default:
+        prv_set_refreshing(false);
         break;
     }
   }
@@ -833,6 +924,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     if (count == 0) {
       prv_set_status("Timeline is empty.");
     }
+    prv_set_refreshing(false);
     menu_layer_reload_data(s_menu_layer);
   }
 
