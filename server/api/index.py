@@ -16,7 +16,7 @@ The setup wizard (browser, not the watch) uses:
     GET  /api/config/status                     -> { claimed, storage, cookies, source } (no auth)
 
 The data endpoints require `Authorization: Bearer <token>`. The token is minted
-by the server on first setup ("claim") and stored in Upstash Redis; the
+by the server on first setup ("claim") and stored in Redis; the
 APP_TOKEN env var is the legacy fallback.
 
 Deployed on Vercel as an ASGI app (see vercel.json rewrites). For local dev:
@@ -115,8 +115,8 @@ async def config(body: ConfigBody, authorization: str = Header(default="")) -> d
     if not _storage.storage_configured():
         raise HTTPException(
             status_code=503,
-            detail="no cookie storage configured — connect Upstash Redis "
-            "(Vercel project → Storage) and redeploy",
+            detail="no cookie storage configured — connect a Redis database "
+            "(Vercel project → Storage, e.g. Upstash or Redis Cloud), then redeploy",
         )
     # First-ever save claims the server: the token is minted here, not by the
     # user. After that, saves require the Bearer token like everything else.
@@ -168,8 +168,8 @@ async def pair_new() -> dict:
     if not _storage.storage_configured():
         raise HTTPException(
             status_code=503,
-            detail="no cookie storage configured — connect Upstash Redis "
-            "(Vercel project → Storage) and redeploy",
+            detail="no cookie storage configured — connect a Redis database "
+            "(Vercel project → Storage, e.g. Upstash or Redis Cloud), then redeploy",
         )
     return {"pair_code": _mint_pair_code(), "pair_expires_s": PAIR_TTL_SECONDS}
 

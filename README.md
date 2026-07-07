@@ -61,7 +61,7 @@ contains all photo URLs. Errors: `401` (bad/missing token), `422` (bad body),
 ### 1. Stand up the server
 
 Follow [`server/README.md`](server/README.md): one-click deploy to Vercel
-(nothing to configure), connect the free Upstash Redis storage, then open
+(nothing to configure), connect a free Redis store (Vercel → Storage), then open
 `https://<your-app>.vercel.app/setup` in a desktop browser and paste a
 "Copy as cURL" from x.com DevTools — the wizard extracts your session cookies,
 generates the access secret itself, and shows a short **pairing code** to enter

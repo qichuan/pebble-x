@@ -90,8 +90,9 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
 - **X session**: X blocks automated login behind Cloudflare, so no password is
   ever handled — the user pastes a "Copy as cURL" blob from a logged-in x.com
   DevTools tab into the server's `/setup` wizard, which extracts `auth_token` +
-  `ct0` (`POST /api/config`) and stores them in Upstash Redis (key
-  `tweetfit:x_cookies`, generic KV helpers in `server/api/_storage.py`). The
+  `ct0` (`POST /api/config`) and stores them in Redis (key
+  `tweetfit:x_cookies`, generic KV helpers in `server/api/_storage.py`; transports: Upstash-style
+  REST env vars or a plain `REDIS_URL`/`KV_URL` via redis-py). The
   cookies ride only on requests to `x.com`/`api.x.com`, never `twimg.com` CDN
   assets. Cookie read-through is `_common.load_cookies()`: Redis first,
   `X_COOKIES` env var as fallback — never cache cookies across invocations.
@@ -107,7 +108,7 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   `GET /api/config/status` is deliberately unauthenticated but boolean/
   provenance-only.
   An unclaimed server is claimable by the first visitor — reset by deleting
-  `tweetfit:app_token` in Upstash. `server/login.py` is the legacy manual path.
+  `tweetfit:app_token` in the Redis store. `server/login.py` is the legacy manual path.
 - **Cost discipline**: the watch never auto-polls. It shows cached tweets on
   launch and only hits the network on explicit refresh (long-press SELECT) or an
   empty cache. Preserve this.

@@ -1,11 +1,16 @@
-"""Upstash Redis persistence (cookies, app token, pairing code).
+"""Redis persistence (cookies, app token, pairing code).
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 
 Vercel serverless has a read-only filesystem and env vars are fixed at deploy
-time, so runtime writes (the /setup wizard) need external storage. The Upstash
-REST API is plain HTTPS, so httpx (already a twikit dependency) is enough — no
-Redis client library.
+time, so runtime writes (the /setup wizard) need external storage. Two
+transports, since different Vercel storage integrations inject different env
+vars:
+
+- Upstash-style REST (UPSTASH_REDIS_REST_* or KV_REST_API_*): plain HTTPS via
+  httpx (already a twikit dependency). Preferred when available.
+- Plain Redis protocol (REDIS_URL or KV_URL, e.g. Marketplace Redis Cloud):
+  redis-py over TCP/TLS.
 
 Stored values must never be logged.
 """
@@ -20,7 +25,7 @@ PAIR_KEY = "tweetfit:pair"          # active pairing code (short TTL)
 _TIMEOUT = 5.0
 
 
-def _redis_env():
+def _rest_env():
     """Return (rest_url, token) or None. Supports both env naming schemes the
     Vercel Upstash integration has used over time."""
     for url_var, token_var in (
@@ -34,15 +39,16 @@ def _redis_env():
     return None
 
 
+def _tcp_url():
+    return os.environ.get("REDIS_URL") or os.environ.get("KV_URL")
+
+
 def storage_configured() -> bool:
-    return _redis_env() is not None
+    return _rest_env() is not None or _tcp_url() is not None
 
 
-def _request(method: str, path: str, **kwargs):
-    env = _redis_env()
-    if not env:
-        raise RuntimeError("cookie storage is not configured")
-    url, token = env
+def _rest_request(method: str, path: str, **kwargs):
+    url, token = _rest_env()
     resp = httpx.request(
         method,
         url + path,
@@ -54,19 +60,50 @@ def _request(method: str, path: str, **kwargs):
     return resp.json()
 
 
+def _tcp_client():
+    import redis  # lazy: only some deployments use the TCP transport
+
+    return redis.Redis.from_url(
+        _tcp_url(),
+        decode_responses=True,
+        socket_connect_timeout=_TIMEOUT,
+        socket_timeout=_TIMEOUT,
+    )
+
+
 def kv_get(key: str):
     """Return the stored string, or None when storage is not configured or the
     key is absent/expired."""
-    if not storage_configured():
-        return None
-    return _request("GET", f"/get/{key}").get("result")
+    if _rest_env():
+        return _rest_request("GET", f"/get/{key}").get("result")
+    if _tcp_url():
+        client = _tcp_client()
+        try:
+            return client.get(key)
+        finally:
+            client.close()
+    return None
 
 
 def kv_set(key: str, value: str, ex_seconds: int | None = None) -> None:
-    # Value goes in the POST body so it needs no URL-encoding.
-    suffix = f"?EX={int(ex_seconds)}" if ex_seconds else ""
-    _request("POST", f"/set/{key}{suffix}", content=value)
+    if _rest_env():
+        # Value goes in the POST body so it needs no URL-encoding.
+        suffix = f"?EX={int(ex_seconds)}" if ex_seconds else ""
+        _rest_request("POST", f"/set/{key}{suffix}", content=value)
+        return
+    client = _tcp_client()
+    try:
+        client.set(key, value, ex=ex_seconds)
+    finally:
+        client.close()
 
 
 def kv_del(key: str) -> None:
-    _request("GET", f"/del/{key}")
+    if _rest_env():
+        _rest_request("GET", f"/del/{key}")
+        return
+    client = _tcp_client()
+    try:
+        client.delete(key)
+    finally:
+        client.close()

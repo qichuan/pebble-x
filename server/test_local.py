@@ -170,8 +170,8 @@ with mock.patch("_common.Client", FakeClient):
     good_cookies = {"auth_token": "a" * 40, "ct0": "b" * 160}
 
     r = client.post("/api/config", json=good_cookies, headers=AUTH)
-    assert r.status_code == 503 and "Upstash" in r.json()["detail"], r.json()
-    print("PASS  config without storage -> 503 with Upstash hint")
+    assert r.status_code == 503 and "Redis" in r.json()["detail"], r.json()
+    print("PASS  config without storage -> 503 with Redis hint")
 
     r = client.get("/api/config/status")
     assert r.json() == {
@@ -260,6 +260,38 @@ with mock.patch("_common.Client", FakeClient):
             r = client.post("/api/pair", json={"code": b["pair_code"]})
             assert r.json()["app_token"] == minted
             print("PASS  minted token -> works for data endpoints and pairing")
+
+    # TCP transport wiring: a bare REDIS_URL (Marketplace Redis Cloud etc.,
+    # no REST API) must count as configured and route kv ops through redis-py.
+    class FakeRedisClient:
+        store = {}
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def set(self, key, value, ex=None):
+            self.store[key] = (value, ex)
+
+        def delete(self, key):
+            self.store.pop(key, None)
+
+        def close(self):
+            pass
+
+    fake_redis_mod = type(sys)("redis")
+    fake_redis_mod.Redis = type("Redis", (), {
+        "from_url": staticmethod(lambda url, **k: FakeRedisClient())
+    })
+    with mock.patch.dict(os.environ, {"REDIS_URL": "rediss://default:pw@host:6379"}), \
+            mock.patch.dict(sys.modules, {"redis": fake_redis_mod}):
+        import _storage as st
+        assert st.storage_configured()
+        st.kv_set("k", "v", ex_seconds=60)
+        assert FakeRedisClient.store["k"] == ("v", 60)
+        assert st.kv_get("k") == ("v", 60)
+        st.kv_del("k")
+        assert "k" not in FakeRedisClient.store
+        print("PASS  storage -> bare REDIS_URL routes through redis-py TCP client")
 
     with mock.patch.dict(os.environ):
         del os.environ["X_COOKIES"]

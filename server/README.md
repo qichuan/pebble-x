@@ -19,17 +19,18 @@ server/
                       POST /api/pair {code}                        → { app_token }  (one-time, no auth)
                       GET  /api/config/status                      → { claimed, storage, cookies, source } (no auth)
   api/_common.py    twikit client, cookie read-through, tweet mapping, photo rendering
-  api/_storage.py   Upstash Redis persistence (cookies, access token, pairing code)
+  api/_storage.py   Redis persistence (cookies, access token, pairing code);
+                    Upstash-style REST or plain REDIS_URL
   api/_setup_page.py  HTML for the /setup wizard
   vercel.json       rewrites all requests to the ASGI app
   login.py          legacy manual setup (not deployed) — prefer /setup
-  requirements.txt  twikit, fastapi, uvicorn, pillow, httpx
+  requirements.txt  twikit, fastapi, uvicorn, pillow, httpx, redis
 ```
 
 The data endpoints (`/api/timeline`, `/api/like`, `/api/retweet`, `/api/media`)
 require `Authorization: Bearer <token>`. The token is minted by the server the
 first time the `/setup` wizard saves ("claiming" the server) and stored in
-Upstash Redis; the `APP_TOKEN` env var still works as a legacy fallback.
+Redis; the `APP_TOKEN` env var still works as a legacy fallback.
 
 Run locally: `uvicorn api.index:app --port 9099` (or `python mock_server.py 9099`
 for a version backed by a fake twikit client, no X account needed).
@@ -50,9 +51,11 @@ CLI alternative: `cd server && vercel --prod`.
 ### 2. Connect cookie storage (one-time)
 
 In the Vercel dashboard → your project → **Storage** → **Create / Connect
-Database** → **Upstash Redis** (free tier is plenty — the server stores three
-tiny values). Then **redeploy once** so the injected credentials reach the
-function.
+Database** → any **Redis** offering (Upstash or Redis Cloud; a free tier is
+plenty — the server stores three tiny values). Then **redeploy once** so the
+injected credentials reach the function. Both credential styles work:
+Upstash-style REST vars (`UPSTASH_REDIS_REST_*` / `KV_REST_API_*`) or a plain
+`REDIS_URL`/`KV_URL` connection string.
 
 ### 3. Connect your X account — the /setup wizard
 
@@ -72,7 +75,8 @@ The **first save claims the server**: it generates the access token itself
 (stored in Redis, remembered by that browser) and shows a short one-time
 **pairing code** (valid 10 minutes) for the watch. Do this right after
 deploying — an unclaimed server can be claimed by anyone who finds the URL.
-To reset, delete the `tweetfit:app_token` key in the Upstash console.
+To reset, delete the `tweetfit:app_token` key in your Redis database
+(Vercel → Storage → your store's data browser).
 
 X blocks automated username/password login behind Cloudflare, so the wizard
 reuses the session of a browser where you're already logged in. Treat those
@@ -97,11 +101,11 @@ flow, everything keeps working — the wizard will ask for your `APP_TOKEN` valu
 server-managed secrets: delete both env vars in Vercel, redeploy, reload
 `/setup` — the next save claims the server and mints a fresh token.
 
-### Manual fallback (no Upstash)
+### Manual fallback (no Redis)
 
 The pre-wizard flow still works: run `python login.py` locally to format the
 two cookies and mint a token, then set `X_COOKIES` and `APP_TOKEN` as Vercel
-env vars and redeploy. The server reads Upstash first and falls back to the
+env vars and redeploy. The server reads Redis first and falls back to the
 env vars.
 
 ## Test

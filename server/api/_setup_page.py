@@ -141,8 +141,8 @@ SETUP_HTML = r"""<!DOCTYPE html>
     "deploying — enter that value. To let this wizard generate and manage the token " +
     "instead, delete the env var in Vercel, redeploy, and reload this page.";
   var HINT_OTHER_BROWSER = "This server was set up from another browser. Enter its " +
-    "access token, or reset by deleting the tweetfit:app_token key in the Upstash " +
-    "console and reloading this page.";
+    "access token, or reset by deleting the tweetfit:app_token key in your Redis " +
+    "database (Vercel → Storage) and reloading this page.";
 
   function mask(v) {
     return v.slice(0, 6) + '… (' + v.length + ' chars)';
