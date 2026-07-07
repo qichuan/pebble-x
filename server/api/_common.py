@@ -36,8 +36,8 @@ def load_cookies() -> tuple[dict, str]:
     if raw:
         return json.loads(raw), "env"
     raise RuntimeError(
-        "X session not configured — open https://<your-server>/setup "
-        "and paste your x.com cookies"
+        "X session not configured — open your server's URL in a browser "
+        "and paste your x.com cookies into the setup page"
     )
 
 

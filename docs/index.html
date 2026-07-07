@@ -47,12 +47,11 @@
            inputmode="url">
     <p class="hint">The address of your TweetFit scraper server (see the <b>server/</b> folder).</p>
 
-    <label for="secret">Pairing code or access token</label>
-    <input id="secret" placeholder="e.g. KX7Q-M2FP"
-           autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
-    <p class="hint">Get a pairing code from your server's <b>/setup</b> page — it fetches
-      the access token for you. Pasting a full access token also works. Leave blank to
-      keep the current one.</p>
+    <label for="secret">Pairing code</label>
+    <input id="secret" placeholder="e.g. 123456" inputmode="numeric"
+           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <p class="hint">The 6-digit code shown on your server's setup page (just open the
+      server URL in a browser). Leave blank to keep the current pairing.</p>
 
     <button id="save" class="primary">Save</button>
   </div>
@@ -94,7 +93,7 @@
       if (xhr.status === 200 && body && body.app_token) {
         onToken(body.app_token);
       } else {
-        setMsg('Invalid or expired pairing code — re-open /setup on your server ' +
+        setMsg('Invalid or expired pairing code — open your server\'s setup page ' +
           'for a fresh one.', 'warn');
       }
     };
@@ -110,11 +109,11 @@
     if (!serverUrl) { setMsg('Enter your server URL.', 'warn'); return; }
     if (!/^https?:\/\//.test(serverUrl)) { setMsg('URL must start with https://', 'warn'); return; }
     setMsg('Saving…');
-    // One field for both: 8 chars from the pairing-code alphabet (dashes,
-    // spaces, and case ignored) is a code to exchange; anything else is a
-    // full access token; blank keeps the current token.
-    var asCode = secret.toUpperCase().replace(/[\s-]/g, '');
-    if (/^[A-Z2-9]{8}$/.test(asCode)) {
+    // 6 digits (spaces/dashes ignored) is a pairing code to exchange; any
+    // other non-blank input is silently treated as a full access token
+    // (legacy env-var setups); blank keeps the current token.
+    var asCode = secret.replace(/[\s-]/g, '');
+    if (/^\d{6}$/.test(asCode)) {
       exchangeCode(serverUrl, asCode, function (fetched) { finish(serverUrl, fetched); });
     } else {
       finish(serverUrl, secret);

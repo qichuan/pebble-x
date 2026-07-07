@@ -39,8 +39,9 @@ class FakeClient:
         pass
 
     async def get_latest_timeline(self, count=20):
-        # Oldest-first on purpose: the endpoint must sort newest-first by id.
-        return [FakeTweet(i, media=(i == 17)) for i in range(count)]
+        # Deliberately NOT newest-first: the endpoint must preserve X's own
+        # ordering (pinned/promoted placement) rather than re-sort.
+        return [FakeTweet(i, media=(i == 2)) for i in range(count)]
 
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 100) for i in range(count)]
@@ -84,19 +85,19 @@ with mock.patch("_common.Client", FakeClient):
     assert r.status_code == 200 and b["feed"] == "following" and len(b["tweets"]) == 15, b
     assert b["tweets"][0]["handle"] == "janedev"
     ids = [t["id"] for t in b["tweets"]]
-    assert ids == sorted(ids, key=int, reverse=True) and ids[0] == "1019", ids
+    assert ids == [str(1000 + i) for i in range(15)], ids  # X's order, untouched
     assert b["tweets"][2]["has_media"] is True and b["tweets"][0]["has_media"] is False
-    assert b["tweets"][2]["media_url"] == "https://pbs.twimg.com/media/fake-17-0.jpg"
+    assert b["tweets"][2]["media_url"] == "https://pbs.twimg.com/media/fake-2-0.jpg"
     assert b["tweets"][2]["media_urls"] == [
-        "https://pbs.twimg.com/media/fake-17-0.jpg",
-        "https://pbs.twimg.com/media/fake-17-1.jpg",
+        "https://pbs.twimg.com/media/fake-2-0.jpg",
+        "https://pbs.twimg.com/media/fake-2-1.jpg",
     ]
-    print("PASS  following -> 15 tweets newest-first, media URLs, handle")
+    print("PASS  following -> 15 tweets in X's own order, media URLs, handle")
 
     r = client.get("/api/timeline?feed=foryou", headers=AUTH)
     b = r.json()
-    assert r.status_code == 200 and b["feed"] == "foryou" and b["tweets"][0]["id"] == "1119", b
-    print("PASS  foryou -> distinct feed, newest-first")
+    assert r.status_code == 200 and b["feed"] == "foryou" and b["tweets"][0]["id"] == "1100", b
+    print("PASS  foryou -> distinct feed, X's order preserved")
 
     r = client.post("/api/like", json={"tweet_id": "1000"}, headers=AUTH)
     assert r.status_code == 200 and r.json()["ok"] is True, r.json()
@@ -165,7 +166,9 @@ with mock.patch("_common.Client", FakeClient):
 
     r = client.get("/setup")
     assert r.status_code == 200 and "auth_token" in r.text and "Copy as cURL" in r.text
-    print("PASS  setup page -> served without auth")
+    r = client.get("/")
+    assert r.status_code == 200 and "Copy as cURL" in r.text
+    print("PASS  setup wizard -> served at / and /setup without auth")
 
     good_cookies = {"auth_token": "a" * 40, "ct0": "b" * 160}
 
@@ -205,8 +208,9 @@ with mock.patch("_common.Client", FakeClient):
         assert b["screen_name"] == "janedev" and b["claimed"] is False and "app_token" not in b
         assert json.loads(kv[_storage.COOKIES_KEY]) == good_cookies
         code = b["pair_code"]
-        assert len(code) == 8 and kv[_storage.PAIR_KEY] == code
-        print("PASS  config -> stored cookies, verified @janedev, pairing code minted")
+        assert len(code) == 6 and code.isdigit(), code
+        assert json.loads(kv[_storage.PAIR_KEY]) == {"code": code, "tries": 0}
+        print("PASS  config -> stored cookies, verified @janedev, 6-digit code minted")
 
         r = client.get("/api/config/status")
         assert r.json() == {
@@ -215,23 +219,33 @@ with mock.patch("_common.Client", FakeClient):
         }, r.json()
         print("PASS  status -> redis cookies, env token")
 
-        r = client.post("/api/pair", json={"code": "NOPE-NOPE"})
+        wrong = "000000" if code != "000000" else "111111"
+        r = client.post("/api/pair", json={"code": wrong})
         assert r.status_code == 404
-        r = client.post("/api/pair", json={"code": code[:4].lower() + "-" + code[4:]})
+        r = client.post("/api/pair", json={"code": code[:3] + " " + code[3:]})
         assert r.status_code == 200 and r.json()["app_token"] == "test-token", r.json()
         r = client.post("/api/pair", json={"code": code})
         assert r.status_code == 404  # single-use
-        print("PASS  pair -> normalizes code, returns token once, then 404")
+        print("PASS  pair -> ignores spacing, returns token once, then 404")
 
         # On-demand code minting (wizard's "Get pairing code" button)
         r = client.post("/api/pair/new")
         assert r.status_code == 401
         r = client.post("/api/pair/new", headers=AUTH)
         b = r.json()
-        assert r.status_code == 200 and len(b["pair_code"]) == 8, b
+        assert r.status_code == 200 and len(b["pair_code"]) == 6, b
         r = client.post("/api/pair", json={"code": b["pair_code"]})
         assert r.status_code == 200 and r.json()["app_token"] == "test-token"
         print("PASS  pair/new -> Bearer-gated, mints an exchangeable code")
+
+        # Brute-force guard: 10 wrong guesses burn the active code for good
+        code = client.post("/api/pair/new", headers=AUTH).json()["pair_code"]
+        wrong = "000000" if code != "000000" else "111111"
+        for _ in range(10):
+            assert client.post("/api/pair", json={"code": wrong}).status_code == 404
+        r = client.post("/api/pair", json={"code": code})
+        assert r.status_code == 404, "code should be burned after 10 bad tries"
+        print("PASS  pair -> 10 wrong guesses invalidate the code")
 
         # Unclaimed server (no Redis token, no env): first save claims it
         kv.clear()
@@ -296,8 +310,8 @@ with mock.patch("_common.Client", FakeClient):
     with mock.patch.dict(os.environ):
         del os.environ["X_COOKIES"]
         r = client.get("/api/timeline?feed=following", headers=AUTH)
-        assert r.status_code == 502 and "/setup" in r.json()["detail"], r.json()
-        print("PASS  timeline unconfigured -> 502 pointing at /setup")
+        assert r.status_code == 502 and "setup page" in r.json()["detail"], r.json()
+        print("PASS  timeline unconfigured -> 502 pointing at the setup page")
 
         r = client.get("/api/config/status")
         assert r.json() == {

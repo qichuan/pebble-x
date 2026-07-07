@@ -82,14 +82,15 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   app — don't subscribe BACK on the timeline window without re-binding it.
 - **twikit is fragile**: it uses X's private GraphQL API and breaks every few
   weeks. Server catches upstream errors and returns `502` with `detail`. Fix =
-  `pip install -U twikit`, sometimes fresh cookies via the `/setup` wizard (no
+  `pip install -U twikit`, sometimes fresh cookies via the setup wizard (no
   redeploy). Known breakages are patched at import time in
   `server/api/_twikit_patch.py` (login key extraction, user-payload backfill) —
   a 502 whose `detail` is a bare quoted key name (e.g. `"'urls'"`) means X
   dropped another field; add it to the backfill table there.
 - **X session**: X blocks automated login behind Cloudflare, so no password is
   ever handled — the user pastes a "Copy as cURL" blob from a logged-in x.com
-  DevTools tab into the server's `/setup` wizard, which extracts `auth_token` +
+  DevTools tab into the server's setup wizard (served at `/`, alias `/setup`),
+  which extracts `auth_token` +
   `ct0` (`POST /api/config`) and stores them in Redis (key
   `tweetfit:x_cookies`, generic KV helpers in `server/api/_storage.py`; transports: Upstash-style
   REST env vars or a plain `REDIS_URL`/`KV_URL` via redis-py). The
@@ -98,10 +99,11 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   `X_COOKIES` env var as fallback — never cache cookies across invocations.
 - **Access token**: minted by the server on the wizard's first save
   ("claiming"; `secrets.token_urlsafe`, key `tweetfit:app_token`) and handed to
-  the watch via a one-time 10-minute pairing code (`tweetfit:pair`,
-  `POST /api/pair`, exchanged by the settings page over CORS — its single
-  secret field auto-detects: 8 chars of the code alphabet = pairing code,
-  anything else = full token; `POST /api/pair/new` (Bearer) mints a code on
+  the watch via a one-time 10-minute **6-digit** pairing code (`tweetfit:pair`
+  holds `{code, tries}`; 10 wrong guesses burn it; `POST /api/pair`, exchanged
+  by the settings page over CORS — its field auto-detects: 6 digits = pairing
+  code, anything else = full token; the token itself is never displayed in any
+  UI — it lives in Redis and the wizard browser's localStorage; `POST /api/pair/new` (Bearer) mints a code on
   demand for the wizard's "Get pairing code" button). `expected_token()` in `index.py` reads Redis
   first, `APP_TOKEN` env as legacy fallback; `/api/config/status` reports the
   provenance as `token_source` so the wizard can explain env-claimed servers.
@@ -121,7 +123,7 @@ for photo rendering. On B/W watch builds the C app ignores `MEDIA_COUNT`, so
   `https://qichuan.github.io/pebble-x/`. On a fork, change both.
 - Vercel serves the single ASGI app via a catch-all rewrite in
   `server/vercel.json`; all routes live in `server/api/index.py` (including the
-  browser-facing `GET /setup` wizard, `POST /api/config`, and
+  browser-facing wizard at `GET /` (alias `/setup`), `POST /api/config`, and
   `GET /api/config/status`). Files starting with `_` (`_common.py`,
   `_storage.py`, `_setup_page.py`, `_twikit_patch.py`) are helpers, not routed.
   Root-level `.py` (`login.py`, `mock_server.py`, `test_local.py`) are dev-only,

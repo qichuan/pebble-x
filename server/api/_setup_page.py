@@ -1,11 +1,12 @@
-"""HTML for the /setup wizard, served by the FastAPI app itself.
+"""HTML for the setup wizard, served by the FastAPI app at / and /setup.
 
 Leading underscore keeps Vercel from routing this file as an endpoint.
 
-Same-origin with /api/config, so no CORS. On an unclaimed server the first save
-claims it: the server mints the access token, the wizard keeps it in this
-browser's localStorage, and the watch gets it via the short pairing code — the
-user never handles the long secret.
+Same-origin with /api/config, so no CORS. The access token is never shown
+anywhere: the server mints it on the claiming save, this page keeps it in
+localStorage for authorizing later saves, and the watch receives it via the
+6-digit pairing code. Recovery (new browser / cleared storage) is deleting the
+tweetfit:app_token key in Redis and re-claiming.
 """
 
 SETUP_HTML = r"""<!DOCTYPE html>
@@ -51,16 +52,8 @@ SETUP_HTML = r"""<!DOCTYPE html>
   #msg { margin-top: 16px; font-size: 14px; text-align: center; min-height: 20px; }
   .paircode {
     color: #000; font-family: ui-monospace, Menlo, Consolas, monospace;
-    font-size: 28px; font-weight: 700; letter-spacing: 3px; text-align: center;
+    font-size: 32px; font-weight: 700; letter-spacing: 4px; text-align: center;
     padding: 10px 0 4px;
-  }
-  .tokenval {
-    color: #000; font-family: ui-monospace, Menlo, Consolas, monospace;
-    font-size: 14px; word-break: break-all; padding: 2px 0 6px;
-  }
-  .minibtn {
-    width: auto; display: inline-block; padding: 6px 14px; font-size: 13px;
-    font-weight: 600; margin: 0 8px 0 0; background: #e8e8e8; color: #000;
   }
   .ok { color: #15803d; }
   .warn { color: #b45309; }
@@ -87,15 +80,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <p id="claim_note" class="hint" style="display:none">This server is brand new &mdash;
-      saving will claim it and generate its access secret automatically.</p>
-
-    <div id="token_row" style="display:none">
-      <label for="token">Access token</label>
-      <input id="token" placeholder="this server's access token"
-             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <p class="hint" id="token_hint"></p>
-    </div>
+    <p class="hint" id="state_note">Checking&hellip;</p>
 
     <label for="paste">Copied from x.com</label>
     <textarea id="paste" placeholder="Paste the whole 'Copy as cURL' text here"
@@ -103,16 +88,6 @@ SETUP_HTML = r"""<!DOCTYPE html>
     <p id="found"></p>
 
     <button id="save" class="primary" disabled>Save to server</button>
-  </div>
-
-  <div class="card">
-    <label>Access token</label>
-    <div class="tokenval" id="token_val" style="display:none"></div>
-    <span id="token_btns" style="display:none">
-      <button class="minibtn" id="token_show">Show</button>
-      <button class="minibtn" id="token_copy">Copy</button>
-    </span>
-    <p class="hint" id="token_state" style="margin-top:10px">Checking&hellip;</p>
   </div>
 
   <div class="card">
@@ -132,17 +107,18 @@ SETUP_HTML = r"""<!DOCTYPE html>
   var cookies = null;
   var claimed = null;       // null until /api/config/status answers
   var tokenSource = null;   // "redis" | "env" | null (from status)
-  var savedToken = null;
-  var tokenShown = false;
+  var savedToken = null;    // localStorage only — never rendered anywhere
   var pairTimer = null;
   try { savedToken = localStorage.getItem('tweetfit_token'); } catch (e) {}
 
-  var HINT_ENV = "This server's access token is the APP_TOKEN env var you set when " +
-    "deploying — enter that value. To let this wizard generate and manage the token " +
-    "instead, delete the env var in Vercel, redeploy, and reload this page.";
-  var HINT_OTHER_BROWSER = "This server was set up from another browser. Enter its " +
-    "access token, or reset by deleting the tweetfit:app_token key in your Redis " +
-    "database (Vercel → Storage) and reloading this page.";
+  var NOTE_NEW = 'This server is brand new — saving will claim it and generate its ' +
+    'access secret automatically.';
+  var NOTE_ENV = 'This server is managed via the APP_TOKEN env var — delete that ' +
+    'env var in Vercel and redeploy to manage it from this page. (Your watch keeps ' +
+    'working meanwhile.)';
+  var NOTE_RESET = 'This server was set up from another browser. To manage it here: ' +
+    'delete the tweetfit:app_token key in your Redis store (Vercel → Storage), ' +
+    'reload this page, save your cookies again, and re-pair your watch.';
 
   function mask(v) {
     return v.slice(0, 6) + '… (' + v.length + ' chars)';
@@ -179,53 +155,35 @@ SETUP_HTML = r"""<!DOCTYPE html>
     document.getElementById(id).style.display = on ? '' : 'none';
   }
 
-  function currentToken() {
-    var typed = document.getElementById('token').value.trim();
-    return typed || savedToken || '';
+  // Saving is possible when the server is unclaimed (the save claims it) or
+  // this browser holds the token from a previous claim.
+  function canAct() {
+    return claimed === false || !!savedToken;
   }
 
-  function renderTokenValue() {
-    document.getElementById('token_val').textContent = !savedToken ? '' :
-      (tokenShown ? savedToken : savedToken.slice(0, 6) + '••••••••••');
-    document.getElementById('token_show').textContent = tokenShown ? 'Hide' : 'Show';
-  }
-
-  function updateTokenUI() {
-    show('claim_note', claimed === false);
-    show('token_val', !!savedToken);
-    show('token_btns', !!savedToken);
-    renderTokenValue();
-    var needInput = claimed === true && !savedToken;
-    show('token_row', needInput);
-    if (needInput) {
-      document.getElementById('token_hint').textContent =
-        tokenSource === 'env' ? HINT_ENV : HINT_OTHER_BROWSER;
-    }
-    var state = document.getElementById('token_state');
-    if (savedToken) {
-      state.textContent = "The watch's credential — a pairing code just delivers " +
-        'it. Kept in this browser for future visits.';
+  function updateUI() {
+    var note = document.getElementById('state_note');
+    if (claimed === null) {
+      note.textContent = 'Checking…';
     } else if (claimed === false) {
-      state.textContent = 'No access token yet — it is generated automatically the ' +
-        'first time you save your X cookies above.';
-    } else if (claimed === true && tokenSource === 'env') {
-      state.textContent = 'Using the APP_TOKEN env var — enter its value in the ' +
-        'save section above to authorize this browser.';
-    } else if (claimed === true) {
-      state.textContent = 'Set up from another browser — enter its token in the ' +
-        'save section above.';
+      note.textContent = NOTE_NEW;
+    } else if (savedToken) {
+      note.textContent = '';
+    } else if (tokenSource === 'env') {
+      note.textContent = NOTE_ENV;
     } else {
-      state.textContent = 'Checking…';
+      note.textContent = NOTE_RESET;
     }
+    note.style.display = note.textContent ? '' : 'none';
+    document.getElementById('save').disabled = !cookies || !canAct();
+    document.getElementById('pair_btn').disabled = !savedToken;
   }
 
-  function updatePairUI() {
-    document.getElementById('pair_btn').disabled = !currentToken();
-  }
-
-  function updateSave() {
-    var needToken = claimed === true && !currentToken();
-    document.getElementById('save').disabled = !cookies || needToken;
+  function dropToken(message) {
+    try { localStorage.removeItem('tweetfit_token'); } catch (e) {}
+    savedToken = null;
+    updateUI();
+    setMsg(message, 'err');
   }
 
   function refresh() {
@@ -243,7 +201,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
           "That request went to X's CDN (twimg.com) — copy one going to x.com instead." :
           'No cookies found yet — make sure the paste includes auth_token and ct0.');
     }
-    updateSave();
+    updateUI();
   }
 
   var PAIR_HINT_IDLE = 'On your phone: Pebble app → TweetFit → Settings → ' +
@@ -253,7 +211,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
     var codeEl = document.getElementById('pair_code');
     var hintEl = document.getElementById('pair_hint');
     show('pair_code', true);
-    codeEl.textContent = code.slice(0, 4) + '-' + code.slice(4);
+    codeEl.textContent = code.slice(0, 3) + ' ' + code.slice(3);
     var end = Date.now() + ttlSeconds * 1000;
     if (pairTimer) clearInterval(pairTimer);
     function tick() {
@@ -276,36 +234,24 @@ SETUP_HTML = r"""<!DOCTYPE html>
   fetch('/api/config/status').then(function (r) { return r.json(); }).then(function (s) {
     claimed = !!s.claimed;
     tokenSource = s.token_source || null;
-    updateTokenUI();
-    updateSave();
-    updatePairUI();
+    updateUI();
   }).catch(function () {
-    claimed = true;  // fail closed: assume a token is needed
-    updateTokenUI();
-    updateSave();
-    updatePairUI();
+    claimed = true;  // fail closed
+    updateUI();
   });
 
   document.getElementById('paste').addEventListener('input', refresh);
-  document.getElementById('token').addEventListener('input', function () {
-    updateSave();
-    updatePairUI();
-  });
 
   document.getElementById('pair_btn').addEventListener('click', function () {
-    var token = currentToken();
-    if (!token) return;
+    if (!savedToken) return;
     fetch('/api/pair/new', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token }
+      headers: { 'Authorization': 'Bearer ' + savedToken }
     }).then(function (resp) {
       return resp.json().then(function (body) { return { resp: resp, body: body }; });
     }).then(function (r) {
       if (r.resp.status === 401) {
-        try { localStorage.removeItem('tweetfit_token'); } catch (e) {}
-        savedToken = null;
-        updateTokenUI(); updateSave(); updatePairUI();
-        setMsg("Wrong access token — enter this server's token.", 'err');
+        dropToken(tokenSource === 'env' ? NOTE_ENV : NOTE_RESET);
       } else if (!r.resp.ok) {
         setMsg(r.body.detail || ('Pairing failed: ' + r.resp.status), 'err');
       } else {
@@ -317,33 +263,11 @@ SETUP_HTML = r"""<!DOCTYPE html>
     });
   });
 
-  document.getElementById('token_show').addEventListener('click', function () {
-    tokenShown = !tokenShown;
-    renderTokenValue();
-  });
-
-  document.getElementById('token_copy').addEventListener('click', function () {
-    if (!savedToken) return;
-    var btn = document.getElementById('token_copy');
-    navigator.clipboard.writeText(savedToken).then(function () {
-      btn.textContent = 'Copied!';
-      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
-    }).catch(function () {
-      tokenShown = true;
-      renderTokenValue();  // clipboard blocked — reveal so it can be copied by hand
-    });
-  });
-
   document.getElementById('save').addEventListener('click', function () {
-    if (!cookies) return;
-    var token = currentToken();
-    if (claimed === true && !token) {
-      setMsg("Enter this server's access token first.", 'warn');
-      return;
-    }
+    if (!cookies || !canAct()) return;
     setMsg('Saving…');
     var headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = 'Bearer ' + token;
+    if (savedToken) headers['Authorization'] = 'Bearer ' + savedToken;
     fetch('/api/config', {
       method: 'POST',
       headers: headers,
@@ -352,27 +276,20 @@ SETUP_HTML = r"""<!DOCTYPE html>
       return resp.json().then(function (body) { return { resp: resp, body: body }; });
     }).then(function (r) {
       if (r.resp.status === 401) {
-        try { localStorage.removeItem('tweetfit_token'); } catch (e) {}
-        savedToken = null;
-        updateTokenUI();
-        updateSave();
-        updatePairUI();
-        setMsg("Wrong access token — enter this server's token.", 'err');
+        dropToken(tokenSource === 'env' ? NOTE_ENV : NOTE_RESET);
       } else if (r.resp.status === 503) {
         setMsg(r.body.detail || 'No cookie storage configured on the server.', 'err');
       } else if (!r.resp.ok) {
         setMsg('Save failed: ' + (r.body.detail ?
           JSON.stringify(r.body.detail) : r.resp.status), 'err');
       } else {
-        var keep = r.body.app_token || token;
-        if (keep) {
-          savedToken = keep;
-          try { localStorage.setItem('tweetfit_token', keep); } catch (e) {}
+        if (r.body.app_token) {
+          savedToken = r.body.app_token;  // kept invisible; used for later saves
+          try { localStorage.setItem('tweetfit_token', savedToken); } catch (e) {}
+          tokenSource = 'redis';
         }
         claimed = true;
-        if (r.body.app_token) tokenSource = 'redis';  // claim minted it
-        updateTokenUI();
-        updatePairUI();
+        updateUI();
         showPair(r.body.pair_code, r.body.pair_expires_s || 600);
         if (r.body.verified) {
           setMsg('✓ Connected as @' + r.body.screen_name +

@@ -7,7 +7,7 @@ The Pebble app reaches these endpoints over the internet:
     GET  /api/health                            -> { ok: true }   (no auth)
 
 The setup wizard (browser, not the watch) uses:
-    GET  /setup                                 -> HTML wizard    (no auth)
+    GET  /  (alias /setup)                      -> HTML wizard    (no auth)
     POST /api/config {auth_token, ct0}          -> { ok, verified, screen_name,
                                                      pair_code, claimed, app_token? }
                                                    (claims an unclaimed server; Bearer after)
@@ -44,8 +44,8 @@ from _common import (
 )
 from _setup_page import SETUP_HTML
 
-PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I/L lookalikes
 PAIR_TTL_SECONDS = 600
+PAIR_MAX_TRIES = 10  # 6-digit codes are guessable, so failed exchanges burn the code
 
 MAX_TWEETS = 15
 
@@ -105,6 +105,7 @@ async def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/")
 @app.get("/setup")
 async def setup_page() -> HTMLResponse:
     return HTMLResponse(SETUP_HTML)
@@ -156,8 +157,12 @@ async def config(body: ConfigBody, authorization: str = Header(default="")) -> d
 
 
 def _mint_pair_code() -> str:
-    code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(8))
-    _storage.kv_set(_storage.PAIR_KEY, code, ex_seconds=PAIR_TTL_SECONDS)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    _storage.kv_set(
+        _storage.PAIR_KEY,
+        json.dumps({"code": code, "tries": 0}),
+        ex_seconds=PAIR_TTL_SECONDS,
+    )
     return code
 
 
@@ -176,12 +181,20 @@ async def pair_new() -> dict:
 
 @app.post("/api/pair")
 async def pair(body: PairBody) -> dict:
-    code = body.code.strip().upper().replace("-", "").replace(" ", "")
-    stored = _storage.kv_get(_storage.PAIR_KEY)
-    if not code or not stored or not secrets.compare_digest(code, stored):
-        raise HTTPException(status_code=404, detail="invalid or expired pairing code")
-    _storage.kv_del(_storage.PAIR_KEY)  # single-use
-    return {"app_token": expected_token()}
+    code = body.code.strip().replace("-", "").replace(" ", "")
+    raw = _storage.kv_get(_storage.PAIR_KEY)
+    stored = json.loads(raw) if raw else None
+    if code and stored and secrets.compare_digest(code, stored["code"]):
+        _storage.kv_del(_storage.PAIR_KEY)  # single-use
+        return {"app_token": expected_token()}
+    if stored:
+        stored["tries"] = stored.get("tries", 0) + 1
+        if stored["tries"] >= PAIR_MAX_TRIES:
+            _storage.kv_del(_storage.PAIR_KEY)  # too many guesses — burn the code
+        else:
+            _storage.kv_set(_storage.PAIR_KEY, json.dumps(stored),
+                            ex_seconds=PAIR_TTL_SECONDS)
+    raise HTTPException(status_code=404, detail="invalid or expired pairing code")
 
 
 @app.get("/api/config/status")
@@ -216,10 +229,9 @@ async def timeline(feed: str = "following") -> dict:
             result = await client.get_timeline(count=20)
         else:
             result = await client.get_latest_timeline(count=20)
-        # X mixes in pinned/promoted/thread items out of order; snowflake ids
-        # encode creation time, so sort newest-first before truncating.
-        ordered = sorted(result, key=lambda t: int(t.id), reverse=True)
-        tweets = [tweet_to_dict(t) for t in ordered[:MAX_TWEETS]]
+        # Preserve X's own ordering (pinned/promoted/thread placement) so the
+        # watch shows the same timeline as the official app.
+        tweets = [tweet_to_dict(t) for t in list(result)[:MAX_TWEETS]]
     except Exception as e:  # twikit breakage, blocked IP, bad cookies, etc.
         raise HTTPException(status_code=502, detail=str(e))
     return {"feed": feed, "tweets": tweets}
