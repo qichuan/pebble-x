@@ -277,7 +277,12 @@ async def tweet_detail(id: str) -> dict:
 
     if not full_text and not replies:
         raise HTTPException(status_code=502, detail=detail or "tweet unavailable")
-    return {"full_text": full_text, "replies": replies}
+    result = {"full_text": full_text, "replies": replies}
+    if not replies and detail:
+        # Surface why comments came back empty (twikit's TweetDetail path is
+        # fragile) without failing the request — visible via curl or pkjs logs.
+        result["replies_error"] = detail
+    return result
 
 
 @app.post("/api/like", dependencies=[Depends(require_token)])

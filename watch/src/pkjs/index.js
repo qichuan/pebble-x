@@ -387,6 +387,9 @@ function deliverComments(payload, feed) {
       if (err) return enqueue({ COMMENTS_ID: requestId, COMMENTS_ERROR: COMMENTS_ERROR_SERVER });
       var fullText = (data && data.full_text) || tweet.text || '';
       var replies = (data && data.replies) || [];
+      if (data && data.replies_error) {
+        console.log('comments: 0 replies for ' + tweet.id + ' -> ' + data.replies_error);
+      }
       sendComments(requestId, buildCommentsBody(fullText, replies));
     });
 }
