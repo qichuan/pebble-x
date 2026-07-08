@@ -355,7 +355,7 @@ static void prv_load_comments(void) {
   s_comments_request_id++;
   prv_clear_comments_transfer();
   s_comments_state = COMMENTS_LOADING;
-  prv_detail_body_note("Loading comments...");
+  prv_detail_body_note("Loading...");
   dict_write_int32(iter, MESSAGE_KEY_CMD, CMD_COMMENTS);
   dict_write_int32(iter, MESSAGE_KEY_FEED, s_feed);
   dict_write_int32(iter, MESSAGE_KEY_TWEET_INDEX, s_detail_index);
