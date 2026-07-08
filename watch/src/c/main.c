@@ -229,12 +229,11 @@ static void prv_detail_relayout_body(void) {
                                 GSize(bounds.size.w, 28 + body_size.h + 16));
 }
 
-// Initial body: the tweet text, plus a hint to load comments if any exist.
+// Initial body: the tweet text, plus a hint to load the rest if replies exist.
 static void prv_build_detail_body(Tweet *t) {
   if (t->reply_count > 0) {
     snprintf(s_detail_body, sizeof(s_detail_body),
-             "%s\n\n[ Press DOWN for %d comment%s ]",
-             t->text, t->reply_count, t->reply_count == 1 ? "" : "s");
+             "%s\n\n[ Press DOWN for full text and replies ]", t->text);
   } else {
     snprintf(s_detail_body, sizeof(s_detail_body), "%s", t->text);
   }

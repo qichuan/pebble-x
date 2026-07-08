@@ -40,6 +40,7 @@ from _common import (
     make_client_with,
     media_urls,
     render_media_for_watch,
+    strip_trailing_tco,
     tweet_to_dict,
 )
 from _setup_page import SETUP_HTML
@@ -239,7 +240,8 @@ async def timeline(feed: str = "following") -> dict:
 
 
 def _full_text_of(tweet) -> str:
-    return getattr(tweet, "full_text", None) or getattr(tweet, "text", "") or ""
+    text = getattr(tweet, "full_text", None) or getattr(tweet, "text", "") or ""
+    return strip_trailing_tco(text)
 
 
 @app.get("/api/tweet", dependencies=[Depends(require_token)])

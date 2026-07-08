@@ -203,6 +203,13 @@ with mock.patch("_common.Client", FakeClient):
     assert r.status_code == 401
     print("PASS  tweet detail -> Bearer required")
 
+    from _common import strip_trailing_tco as _strip
+    assert _strip("hello https://t.co/abc123") == "hello"
+    assert _strip("photo https://t.co/a https://t.co/b") == "photo"  # trailing run
+    assert _strip("mid https://t.co/x more") == "mid https://t.co/x more"  # not trailing
+    assert _strip("see https://t.co/a and https://t.co/b") == "see https://t.co/a and"
+    print("PASS  strip trailing t.co links only")
+
     # ---- Setup wizard, claim, cookie config & pairing ----
     import _storage
 

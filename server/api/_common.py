@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -140,6 +141,16 @@ def media_urls(tweet) -> list[str]:
     return urls
 
 
+# X appends a t.co shortlink for attached media / quoted tweets to the end of
+# the tweet body; strip trailing ones so the watch doesn't show a dead URL
+# (links embedded mid-text are left alone).
+_TRAILING_TCO = re.compile(r"(?:\s*https?://t\.co/\w+)+\s*$")
+
+
+def strip_trailing_tco(text: str) -> str:
+    return _TRAILING_TCO.sub("", text or "").rstrip()
+
+
 def tweet_to_dict(t) -> dict:
     """Flatten a twikit Tweet into the small shape the watch needs."""
     urls = media_urls(t)
@@ -148,7 +159,7 @@ def tweet_to_dict(t) -> dict:
         "id": t.id,
         "name": getattr(t.user, "name", "") or "",
         "handle": getattr(t.user, "screen_name", "") or "",
-        "text": t.text or "",
+        "text": strip_trailing_tco(t.text),
         "created_at": getattr(t, "created_at", "") or "",
         "favorited": bool(getattr(t, "favorited", False)),
         "has_media": bool(url),
