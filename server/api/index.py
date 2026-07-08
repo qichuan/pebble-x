@@ -48,6 +48,7 @@ PAIR_TTL_SECONDS = 600
 PAIR_MAX_TRIES = 10  # 6-digit codes are guessable, so failed exchanges burn the code
 
 MAX_TWEETS = 15
+MAX_REPLIES = 12
 
 app = FastAPI(title="TweetFit", docs_url=None, redoc_url=None)
 
@@ -235,6 +236,26 @@ async def timeline(feed: str = "following") -> dict:
     except Exception as e:  # twikit breakage, blocked IP, bad cookies, etc.
         raise HTTPException(status_code=502, detail=str(e))
     return {"feed": feed, "tweets": tweets}
+
+
+@app.get("/api/tweet", dependencies=[Depends(require_token)])
+async def tweet_detail(id: str) -> dict:
+    """Full text + top replies for a single tweet.
+
+    Fetched on demand when the watch user opens a tweet and asks for comments
+    (never on the timeline poll). twikit's get_tweet_by_id populates both the
+    long-form note text and the reply list in one round trip.
+    """
+    try:
+        client = make_client()
+        tweet = await client.get_tweet_by_id(id)
+        replies = [tweet_to_dict(r) for r in list(tweet.replies or [])[:MAX_REPLIES]]
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {
+        "full_text": getattr(tweet, "full_text", None) or tweet.text or "",
+        "replies": replies,
+    }
 
 
 @app.post("/api/like", dependencies=[Depends(require_token)])

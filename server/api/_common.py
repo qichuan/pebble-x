@@ -154,6 +154,7 @@ def tweet_to_dict(t) -> dict:
         "has_media": bool(url),
         "media_url": url,
         "media_urls": urls,
+        "reply_count": int(getattr(t, "reply_count", 0) or 0),
     }
 
 

@@ -6,12 +6,15 @@
 var MAX_TWEETS = 15;
 var MAX_TEXT_BYTES = 437;   // must fit the watch-side buffer (TEXT_LEN 441)
 var MAX_AUTHOR_BYTES = 23;
+var MAX_BODY_BYTES = 1800;  // full text + replies blob; must fit the watch COMMENTS buffer
 var CACHE_FRESH_MS = 10 * 60 * 1000;  // older caches are re-fetched in the background
 var IMAGE_CHUNK_BYTES = 512;
+var COMMENTS_CHUNK_BYTES = 512;
 
 var CMD_FETCH = 0;
 var CMD_REFRESH = 1;
 var CMD_IMAGE = 2;
+var CMD_COMMENTS = 3;
 
 var STATUS_OK = 0;
 var STATUS_NOT_CONFIGURED = 1;
@@ -23,6 +26,10 @@ var IMAGE_ERROR_MISSING = 1;
 var IMAGE_ERROR_NETWORK = 2;
 var IMAGE_ERROR_SERVER = 3;
 var IMAGE_ERROR_DECODE = 4;
+
+var COMMENTS_ERROR_MISSING = 1;
+var COMMENTS_ERROR_NETWORK = 2;
+var COMMENTS_ERROR_SERVER = 3;
 
 var FEED_NAMES = ['following', 'foryou'];
 
@@ -45,6 +52,29 @@ function truncateUtf8(str, maxBytes) {
   if (i >= str.length) return str;
   if (i > 0 && str.charCodeAt(i - 1) >= 0xD800 && str.charCodeAt(i - 1) <= 0xDBFF) i--;
   return str.slice(0, i);
+}
+
+// Encode a JS string to an array of UTF-8 byte values (for chunked AppMessage
+// byte-array transfer, mirrored by the C side reassembling into a char buffer).
+function utf8Bytes(str) {
+  var out = [];
+  for (var i = 0; i < str.length; i++) {
+    var code = str.charCodeAt(i);
+    if (code < 0x80) {
+      out.push(code);
+    } else if (code < 0x800) {
+      out.push(0xC0 | (code >> 6), 0x80 | (code & 0x3F));
+    } else if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+      var lo = str.charCodeAt(i + 1);
+      var cp = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+      out.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F),
+               0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+      i++;
+    } else {
+      out.push(0xE0 | (code >> 12), 0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F));
+    }
+  }
+  return out;
 }
 
 function loadJSON(key) {
@@ -141,7 +171,8 @@ function fetchTimeline(feed, callback) {
         liked: !!t.favorited,
         has_media: mediaUrls.length > 0,
         media_url: mediaUrl,
-        media_urls: mediaUrls
+        media_urls: mediaUrls,
+        reply_count: t.reply_count || 0
       };
     });
     saveJSON('cache_' + feed, { fetchedAt: Date.now(), tweets: tweets });
@@ -244,7 +275,8 @@ function sendTimeline(tweets) {
       TIME_AGO: timeAgo(t.created_at),
       LIKED: t.liked ? 1 : 0,
       HAS_MEDIA: hasPhoto ? 1 : 0,
-      MEDIA_COUNT: mediaCount
+      MEDIA_COUNT: mediaCount,
+      REPLY_COUNT: t.reply_count || 0
     });
   });
 }
@@ -308,6 +340,57 @@ function deliverImage(payload, feed) {
   );
 }
 
+// ---- Comments (full text + replies), lazy-loaded on demand ----
+
+function buildCommentsBody(fullText, replies) {
+  var body = fullText || '';
+  var n = replies.length;
+  body += '\n\n----------\n' +
+          n + (n === 1 ? ' reply' : ' replies') + '\n\n';
+  for (var i = 0; i < n; i++) {
+    var r = replies[i];
+    var who = r.handle || r.name || '?';
+    body += '@' + who + ' · ' + timeAgo(r.created_at) + '\n' + (r.text || '');
+    if (i < n - 1) body += '\n\n';
+  }
+  return body;
+}
+
+function sendComments(requestId, body) {
+  var bytes = utf8Bytes(truncateUtf8(body, MAX_BODY_BYTES));
+  var chunkCount = Math.ceil(bytes.length / COMMENTS_CHUNK_BYTES);
+  enqueue({
+    COMMENTS_ID: requestId,
+    COMMENTS_TOTAL: bytes.length,
+    COMMENTS_CHUNK_COUNT: chunkCount
+  });
+  for (var i = 0; i < chunkCount; i++) {
+    var start = i * COMMENTS_CHUNK_BYTES;
+    var end = Math.min(start + COMMENTS_CHUNK_BYTES, bytes.length);
+    var chunk = [];
+    for (var j = start; j < end; j++) chunk.push(bytes[j]);
+    enqueue({ COMMENTS_ID: requestId, COMMENTS_OFFSET: start, COMMENTS_DATA: chunk });
+  }
+}
+
+function deliverComments(payload, feed) {
+  var requestId = payload.COMMENTS_ID || 0;
+  var index = payload.TWEET_INDEX;
+  var cache = loadJSON('cache_' + feed);
+  var tweet = cache && cache.tweets && cache.tweets[index];
+  if (!tweet || !tweet.id) {
+    return enqueue({ COMMENTS_ID: requestId, COMMENTS_ERROR: COMMENTS_ERROR_MISSING });
+  }
+  serverRequest('GET', '/api/tweet?id=' + encodeURIComponent(tweet.id), null,
+    function (err, data) {
+      if (err === 'network') return enqueue({ COMMENTS_ID: requestId, COMMENTS_ERROR: COMMENTS_ERROR_NETWORK });
+      if (err) return enqueue({ COMMENTS_ID: requestId, COMMENTS_ERROR: COMMENTS_ERROR_SERVER });
+      var fullText = (data && data.full_text) || tweet.text || '';
+      var replies = (data && data.replies) || [];
+      sendComments(requestId, buildCommentsBody(fullText, replies));
+    });
+}
+
 function currentFeed(payload) {
   if (payload && payload.FEED !== undefined) {
     var name = FEED_NAMES[payload.FEED] || 'following';
@@ -358,6 +441,8 @@ Pebble.addEventListener('appmessage', function (e) {
       deliverTimeline(payload.CMD === CMD_REFRESH, feed);
     } else if (payload.CMD === CMD_IMAGE) {
       deliverImage(payload, feed);
+    } else if (payload.CMD === CMD_COMMENTS) {
+      deliverComments(payload, feed);
     }
   }
   if (payload.LIKE_INDEX !== undefined) {

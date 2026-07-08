@@ -49,7 +49,14 @@
       "MEDIA_COUNT",
       "IMAGE_INDEX",
       "RETWEET_INDEX",
-      "RETWEET_RESULT"
+      "RETWEET_RESULT",
+      "REPLY_COUNT",
+      "COMMENTS_ID",
+      "COMMENTS_TOTAL",
+      "COMMENTS_CHUNK_COUNT",
+      "COMMENTS_OFFSET",
+      "COMMENTS_DATA",
+      "COMMENTS_ERROR"
     ],
     "resources": {
       "media": [

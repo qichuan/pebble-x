@@ -24,7 +24,7 @@ class FakeUser:
 
 
 class FakeTweet:
-    def __init__(self, i, handle, media=False):
+    def __init__(self, i, handle, media=False, reply_count=0, replies=None, full_text=None):
         self.id = str(1000 + i)
         self.user = FakeUser(handle)
         self.text = (
@@ -32,8 +32,13 @@ class FakeTweet:
             if handle == "janedev"
             else "For You recommended tweet %d with a longer body to exercise scrolling" % i
         )
+        self.full_text = full_text if full_text is not None else self.text
         self.created_at = "Mon Jul 06 08:%02d:00 +0000 2026" % (i % 60)
         self.favorited = False
+        # Vary reply counts so some tweets show the "Press DOWN for comments"
+        # hint and others don't.
+        self.reply_count = reply_count if reply_count else (i % 4)
+        self.replies = replies
         self.media = (
             [
                 {"media_url_https": "https://pbs.twimg.com/media/mock-%d-0.png" % i},
@@ -59,7 +64,15 @@ class FakeClient:
         return [FakeTweet(i + 50, "foryoubot") for i in range(count)]
 
     async def get_tweet_by_id(self, tid):
-        return FakeTweet(1, "janedev", media=True)
+        handles = ["alice", "bob", "carol", "dave", "erin", "frank"]
+        replies = []
+        for j, h in enumerate(handles):
+            r = FakeTweet(300 + j, h)
+            r.text = "Reply %d from @%s — this is a sample comment 中文 body." % (j + 1, h)
+            replies.append(r)
+        note = ("This is the full note-tweet body. " * 12).strip()
+        return FakeTweet(1, "janedev", media=True, reply_count=len(replies),
+                         replies=replies, full_text=note)
 
     async def favorite_tweet(self, tid):
         print("LIKED tweet", tid, flush=True)

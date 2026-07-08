@@ -11,6 +11,7 @@
 #define CMD_FETCH 0
 #define CMD_REFRESH 1
 #define CMD_IMAGE 2
+#define CMD_COMMENTS 3
 
 // Feeds
 #define FEED_FOLLOWING 0
@@ -31,6 +32,18 @@
 
 #define IMAGE_MAX_BYTES (32 * 1024)
 
+// Comments transfer (phone -> watch): full text + replies as one UTF-8 blob
+#define COMMENTS_ERROR_MISSING 1
+#define COMMENTS_ERROR_NETWORK 2
+#define COMMENTS_ERROR_SERVER 3
+#define COMMENTS_MAX_BYTES 1900
+#define DETAIL_BODY_LEN 2048
+
+// Comment-load state for the open detail window
+#define COMMENTS_NONE 0
+#define COMMENTS_LOADING 1
+#define COMMENTS_LOADED 2
+
 #define ACTION_ICON_SIZE 25
 #define ACTION_ICON_MARGIN 8
 #define ACTION_OVERLAY_WIDTH (ACTION_ICON_SIZE + ACTION_ICON_MARGIN * 2)
@@ -45,6 +58,7 @@ typedef struct {
   bool liked;
   bool has_media;
   int media_count;
+  int reply_count;
 } Tweet;
 
 static Tweet s_tweets[MAX_TWEETS];
@@ -78,6 +92,14 @@ static TextLayer *s_detail_header_layer;
 static TextLayer *s_detail_body_layer;
 static int s_detail_index = -1;
 static char s_detail_header[AUTHOR_LEN + TIME_LEN + 8];
+// Detail body buffer: the tweet text, then either a "load comments" hint or,
+// once loaded, the phone-built full-text + replies blob.
+static char s_detail_body[DETAIL_BODY_LEN];
+static int s_comments_state = COMMENTS_NONE;
+static int s_comments_request_id = 0;
+static uint8_t *s_comments_data = NULL;
+static int s_comments_expected_bytes = 0;
+static int s_comments_received_bytes = 0;
 
 static Layer *s_action_overlay_layer;
 static bool s_action_open = false;
@@ -131,7 +153,216 @@ static void prv_set_status(const char *text) {
   }
 }
 
+// ---- Toast ----
+// Transient banner across the top of the current window ("Liked" / "Retweeted"),
+// auto-dismissed after ~1s. It attaches to whichever window is on top when shown
+// (timeline or detail), so it always lands over the view the user is looking at.
+#define TOAST_HEIGHT 26
+#define TOAST_DURATION_MS 1000
+static Layer *s_toast_layer;
+static AppTimer *s_toast_timer;
+static char s_toast_text[16];
+
+static void prv_toast_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, ACCENT_COLOR);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, s_toast_text, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(0, 2, bounds.size.w, TOAST_HEIGHT - 2),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+// Safe to call anytime; also invoked from every window unload so the layer never
+// outlives the window it was parented to.
+static void prv_hide_toast(void) {
+  if (s_toast_timer) {
+    app_timer_cancel(s_toast_timer);
+    s_toast_timer = NULL;
+  }
+  if (s_toast_layer) {
+    layer_destroy(s_toast_layer);
+    s_toast_layer = NULL;
+  }
+}
+
+static void prv_toast_timeout(void *context) {
+  s_toast_timer = NULL;
+  prv_hide_toast();
+}
+
+static void prv_show_toast(const char *text) {
+  Window *window = window_stack_get_top_window();
+  if (!window) {
+    return;
+  }
+  prv_hide_toast();  // drop any previous toast (possibly on another window)
+  snprintf(s_toast_text, sizeof(s_toast_text), "%s", text);
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  s_toast_layer = layer_create(GRect(0, 0, bounds.size.w, TOAST_HEIGHT));
+  layer_set_update_proc(s_toast_layer, prv_toast_update_proc);
+  layer_add_child(window_layer, s_toast_layer);
+  s_toast_timer = app_timer_register(TOAST_DURATION_MS, prv_toast_timeout, NULL);
+}
+
 // ---- Detail window ----
+
+// Recompute the body layer height + scroll content size after s_detail_body
+// changes (comments loaded, a loading/error line appended, etc.).
+static void prv_detail_relayout_body(void) {
+  if (!s_detail_window || !s_scroll_layer || !s_detail_body_layer) {
+    return;
+  }
+  GRect bounds = layer_get_bounds(window_get_root_layer(s_detail_window));
+  const int margin = PBL_IF_ROUND_ELSE(16, 6);
+  const int width = bounds.size.w - margin * 2;
+  GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+  text_layer_set_text(s_detail_body_layer, s_detail_body);
+  GSize body_size = graphics_text_layout_get_content_size(
+      s_detail_body, body_font, GRect(0, 0, width, 4000),
+      GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  GRect frame = layer_get_frame(text_layer_get_layer(s_detail_body_layer));
+  frame.size.h = body_size.h + 8;
+  layer_set_frame(text_layer_get_layer(s_detail_body_layer), frame);
+  scroll_layer_set_content_size(s_scroll_layer,
+                                GSize(bounds.size.w, 28 + body_size.h + 16));
+}
+
+// Initial body: the tweet text, plus a hint to load comments if any exist.
+static void prv_build_detail_body(Tweet *t) {
+  if (t->reply_count > 0) {
+    snprintf(s_detail_body, sizeof(s_detail_body),
+             "%s\n\n[ Press DOWN for %d comment%s ]",
+             t->text, t->reply_count, t->reply_count == 1 ? "" : "s");
+  } else {
+    snprintf(s_detail_body, sizeof(s_detail_body), "%s", t->text);
+  }
+  prv_fix_utf8_tail(s_detail_body);
+}
+
+// Replace the body with the tweet text plus a trailing status line and relayout.
+static void prv_detail_body_note(const char *note) {
+  if (s_detail_index < 0 || s_detail_index >= s_tweet_count) {
+    return;
+  }
+  snprintf(s_detail_body, sizeof(s_detail_body), "%s\n\n%s",
+           s_tweets[s_detail_index].text, note);
+  prv_fix_utf8_tail(s_detail_body);
+  prv_detail_relayout_body();
+}
+
+static void prv_clear_comments_transfer(void) {
+  if (s_comments_data) {
+    free(s_comments_data);
+    s_comments_data = NULL;
+  }
+  s_comments_expected_bytes = 0;
+  s_comments_received_bytes = 0;
+}
+
+static void prv_comments_error(int code) {
+  prv_clear_comments_transfer();
+  s_comments_state = COMMENTS_NONE;  // leave it retryable with another DOWN
+  switch (code) {
+    case COMMENTS_ERROR_NETWORK:
+      prv_detail_body_note("Network error - press DOWN to retry");
+      break;
+    case COMMENTS_ERROR_MISSING:
+      prv_detail_body_note("Comments unavailable");
+      break;
+    default:
+      prv_detail_body_note("Couldn't load comments - press DOWN to retry");
+      break;
+  }
+}
+
+static void prv_finish_comments_transfer(void) {
+  if (!s_comments_data || s_comments_expected_bytes <= 0) {
+    return;
+  }
+  int n = s_comments_expected_bytes;
+  if (n > DETAIL_BODY_LEN - 1) {
+    n = DETAIL_BODY_LEN - 1;
+  }
+  memcpy(s_detail_body, s_comments_data, n);
+  s_detail_body[n] = '\0';
+  prv_clear_comments_transfer();
+  prv_fix_utf8_tail(s_detail_body);
+  s_comments_state = COMMENTS_LOADED;
+  prv_detail_relayout_body();
+}
+
+static void prv_start_comments_transfer(int total_bytes) {
+  prv_clear_comments_transfer();
+  if (total_bytes <= 0 || total_bytes > COMMENTS_MAX_BYTES) {
+    prv_comments_error(COMMENTS_ERROR_SERVER);
+    return;
+  }
+  s_comments_data = malloc(total_bytes + 1);
+  if (!s_comments_data) {
+    prv_comments_error(COMMENTS_ERROR_SERVER);
+    return;
+  }
+  s_comments_expected_bytes = total_bytes;
+  s_comments_received_bytes = 0;
+}
+
+static void prv_receive_comments_chunk(DictionaryIterator *iter) {
+  if (!s_comments_data || s_comments_expected_bytes <= 0) {
+    return;
+  }
+  Tuple *offset_tuple = dict_find(iter, MESSAGE_KEY_COMMENTS_OFFSET);
+  Tuple *data_tuple = dict_find(iter, MESSAGE_KEY_COMMENTS_DATA);
+  if (!offset_tuple || !data_tuple || data_tuple->length == 0) {
+    return;
+  }
+  int offset = offset_tuple->value->int32;
+  int length = data_tuple->length;
+  if (offset < 0 || offset + length > s_comments_expected_bytes) {
+    prv_comments_error(COMMENTS_ERROR_SERVER);
+    return;
+  }
+  memcpy(s_comments_data + offset, data_tuple->value->data, length);
+  int end = offset + length;
+  if (end > s_comments_received_bytes) {
+    s_comments_received_bytes = end;
+  }
+  if (s_comments_received_bytes >= s_comments_expected_bytes) {
+    prv_finish_comments_transfer();
+  }
+}
+
+// True when the scroll view is showing (or past) the bottom of its content.
+static bool prv_detail_at_bottom(void) {
+  if (!s_scroll_layer) {
+    return false;
+  }
+  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+  GSize content = scroll_layer_get_content_size(s_scroll_layer);
+  GRect frame = layer_get_frame(scroll_layer_get_layer(s_scroll_layer));
+  return (-offset.y + frame.size.h) >= (content.h - 2);
+}
+
+static void prv_load_comments(void) {
+  if (s_detail_index < 0 || s_detail_index >= s_tweet_count) {
+    return;
+  }
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
+    prv_detail_body_note("Phone busy - press DOWN to retry");
+    return;
+  }
+  s_comments_request_id++;
+  prv_clear_comments_transfer();
+  s_comments_state = COMMENTS_LOADING;
+  prv_detail_body_note("Loading comments...");
+  dict_write_int32(iter, MESSAGE_KEY_CMD, CMD_COMMENTS);
+  dict_write_int32(iter, MESSAGE_KEY_FEED, s_feed);
+  dict_write_int32(iter, MESSAGE_KEY_TWEET_INDEX, s_detail_index);
+  dict_write_int32(iter, MESSAGE_KEY_COMMENTS_ID, s_comments_request_id);
+  app_message_outbox_send();
+}
 
 static void prv_detail_up_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_action_open) {
@@ -150,6 +381,15 @@ static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context
       prv_action_images();
       prv_hide_action();
     }
+    return;
+  }
+  // A fresh DOWN press while already at the bottom loads the comments (once).
+  if (!click_recognizer_is_repeating(recognizer) &&
+      s_comments_state == COMMENTS_NONE &&
+      s_detail_index >= 0 && s_detail_index < s_tweet_count &&
+      s_tweets[s_detail_index].reply_count > 0 &&
+      prv_detail_at_bottom()) {
+    prv_load_comments();
     return;
   }
   scroll_layer_scroll_down_click_handler(recognizer, s_scroll_layer);
@@ -201,12 +441,13 @@ static void prv_detail_window_load(Window *window) {
   text_layer_set_text(s_detail_header_layer, s_detail_header);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_header_layer));
 
+  prv_build_detail_body(t);
   GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
   GSize body_size = graphics_text_layout_get_content_size(
-      t->text, body_font, GRect(0, 0, width, 2000), GTextOverflowModeWordWrap, GTextAlignmentLeft);
+      s_detail_body, body_font, GRect(0, 0, width, 4000), GTextOverflowModeWordWrap, GTextAlignmentLeft);
   s_detail_body_layer = text_layer_create(GRect(margin, 28, width, body_size.h + 8));
   text_layer_set_font(s_detail_body_layer, body_font);
-  text_layer_set_text(s_detail_body_layer, t->text);
+  text_layer_set_text(s_detail_body_layer, s_detail_body);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_body_layer));
 
   scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, 28 + body_size.h + 16));
@@ -224,7 +465,11 @@ static void prv_detail_window_load(Window *window) {
 }
 
 static void prv_detail_window_unload(Window *window) {
+  prv_hide_toast();
   prv_hide_action();
+  prv_clear_comments_transfer();
+  s_comments_state = COMMENTS_NONE;
+  s_comments_request_id++;  // ignore any in-flight comment message
   gbitmap_destroy(s_action_retweet_bitmap);
   gbitmap_destroy(s_action_like_bitmap);
   gbitmap_destroy(s_action_image_bitmap);
@@ -242,6 +487,8 @@ static void prv_detail_window_unload(Window *window) {
 
 static void prv_show_detail(int index) {
   s_detail_index = index;
+  s_comments_state = COMMENTS_NONE;
+  prv_clear_comments_transfer();
   s_detail_window = window_create();
   window_set_window_handlers(s_detail_window, (WindowHandlers) {
     .load = prv_detail_window_load,
@@ -492,6 +739,7 @@ static void prv_image_window_load(Window *window) {
 }
 
 static void prv_image_window_unload(Window *window) {
+  prv_hide_toast();
   s_image_open = false;
   s_image_request_id++;
   prv_clear_image_transfer();
@@ -599,7 +847,7 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
 
   char author_line[AUTHOR_LEN + TIME_LEN + 10];
   snprintf(author_line, sizeof(author_line), "@%s · %s%s",
-           t->author, t->time_ago, t->liked ? " <3" : "");
+           t->author, t->time_ago, t->liked ? " ❤" : "");
 
   char snippet[72];
   size_t j = 0;
@@ -749,6 +997,7 @@ static void prv_timeline_window_load(Window *window) {
 }
 
 static void prv_timeline_window_unload(Window *window) {
+  prv_hide_toast();
   prv_set_refreshing(false);
   gbitmap_destroy(s_swap_bitmap);
   gbitmap_destroy(s_refresh_bitmap);
@@ -887,12 +1136,38 @@ static void prv_inbox_image_received(DictionaryIterator *iter, int request_id) {
   }
 }
 
+static void prv_inbox_comments_received(DictionaryIterator *iter, int request_id) {
+  if (!s_detail_window || s_comments_state != COMMENTS_LOADING ||
+      request_id != s_comments_request_id) {
+    return;
+  }
+
+  Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_COMMENTS_ERROR);
+  if (error_tuple) {
+    prv_comments_error(error_tuple->value->int32);
+    return;
+  }
+
+  Tuple *total_tuple = dict_find(iter, MESSAGE_KEY_COMMENTS_TOTAL);
+  if (total_tuple) {
+    prv_start_comments_transfer(total_tuple->value->int32);
+  }
+
+  if (dict_find(iter, MESSAGE_KEY_COMMENTS_DATA)) {
+    prv_receive_comments_chunk(iter);
+  }
+}
+
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   s_got_reply = true;
   Tuple *t;
 
   if ((t = dict_find(iter, MESSAGE_KEY_IMAGE_ID))) {
     prv_inbox_image_received(iter, t->value->int32);
+  }
+
+  if ((t = dict_find(iter, MESSAGE_KEY_COMMENTS_ID))) {
+    prv_inbox_comments_received(iter, t->value->int32);
   }
 
   if ((t = dict_find(iter, MESSAGE_KEY_STATUS))) {
@@ -935,6 +1210,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       Tweet *tweet = &s_tweets[index];
       tweet->has_media = false;
       tweet->media_count = 0;
+      tweet->reply_count = 0;
       Tuple *field;
       if ((field = dict_find(iter, MESSAGE_KEY_AUTHOR))) {
         snprintf(tweet->author, sizeof(tweet->author), "%s", field->value->cstring);
@@ -962,6 +1238,10 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
         tweet->media_count = PBL_IF_COLOR_ELSE(count, 0);
         tweet->has_media = tweet->media_count > 0;
       }
+      if ((field = dict_find(iter, MESSAGE_KEY_REPLY_COUNT))) {
+        int rc = field->value->int32;
+        tweet->reply_count = rc > 0 ? rc : 0;
+      }
       if (index + 1 > s_tweet_count) {
         s_tweet_count = index + 1;
       }
@@ -975,6 +1255,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     if (index >= 0 && index < s_tweet_count) {
       s_tweets[index].liked = true;
       vibes_short_pulse();
+      prv_show_toast("Liked");
       menu_layer_reload_data(s_menu_layer);
       if (s_action_open && s_action_index == index) {
         prv_action_set_like_text("liked");
@@ -991,6 +1272,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     int index = t->value->int32;
     if (index >= 0 && index < s_tweet_count) {
       vibes_short_pulse();
+      prv_show_toast("Retweeted");
       if (s_action_open && s_action_index == index) {
         prv_action_set_retweet_text("retweeted");
       }

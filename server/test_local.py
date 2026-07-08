@@ -15,12 +15,15 @@ class FakeUser:
 
 
 class FakeTweet:
-    def __init__(self, i, media=False):
+    def __init__(self, i, media=False, reply_count=0, replies=None, full_text=None):
         self.id = str(1000 + i)
         self.user = FakeUser()
         self.text = f"Tweet number {i} 中文"
+        self.full_text = full_text if full_text is not None else self.text
         self.created_at = "Mon Jul 06 09:00:00 +0000 2026"
         self.favorited = False
+        self.reply_count = reply_count
+        self.replies = replies
         self.media = (
             [
                 {"media_url_https": f"https://pbs.twimg.com/media/fake-{i}-0.jpg"},
@@ -41,13 +44,18 @@ class FakeClient:
     async def get_latest_timeline(self, count=20):
         # Deliberately NOT newest-first: the endpoint must preserve X's own
         # ordering (pinned/promoted placement) rather than re-sort.
-        return [FakeTweet(i, media=(i == 2)) for i in range(count)]
+        return [FakeTweet(i, media=(i == 2), reply_count=(3 if i == 0 else 0))
+                for i in range(count)]
 
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 100) for i in range(count)]
 
     async def get_tweet_by_id(self, tid):
-        return FakeTweet(77, media=True)
+        replies = [FakeTweet(200 + j) for j in range(20)]  # server should cap
+        return FakeTweet(
+            77, media=True, reply_count=20, replies=replies,
+            full_text="A very long note tweet body that exceeds the legacy 280",
+        )
 
     async def favorite_tweet(self, tid):
         assert tid == "1000"
@@ -160,6 +168,24 @@ with mock.patch("_common.Client", FakeClient):
         assert r.status_code == 200, r.json()
         assert render_mock.call_args.args[0] == "https://pbs.twimg.com/media/fake-77-1.jpg"
         print("PASS  media fallback -> resolves indexed URL from tweet id")
+
+    # timeline carries reply_count so the watch knows which tweets have comments
+    r = client.get("/api/timeline?feed=following", headers=AUTH)
+    b = r.json()
+    assert b["tweets"][0]["reply_count"] == 3 and b["tweets"][1]["reply_count"] == 0, b
+    print("PASS  timeline -> reply_count per tweet")
+
+    r = client.get("/api/tweet?id=1077", headers=AUTH)
+    b = r.json()
+    assert r.status_code == 200, b
+    assert b["full_text"].startswith("A very long note tweet"), b
+    assert len(b["replies"]) == 12, len(b["replies"])  # capped at MAX_REPLIES
+    assert b["replies"][0]["handle"] == "janedev", b["replies"][0]
+    print("PASS  tweet detail -> full_text + capped replies")
+
+    r = client.get("/api/tweet?id=1077")
+    assert r.status_code == 401
+    print("PASS  tweet detail -> Bearer required")
 
     # ---- Setup wizard, claim, cookie config & pairing ----
     import _storage
