@@ -63,6 +63,10 @@ class FakeClient:
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 50, "foryoubot") for i in range(count)]
 
+    async def get_tweets_by_ids(self, ids):
+        note = ("This is the full note-tweet body. " * 12).strip()
+        return [FakeTweet(1, "janedev", media=True, full_text=note)]
+
     async def get_tweet_by_id(self, tid):
         handles = ["alice", "bob", "carol", "dave", "erin", "frank"]
         replies = []

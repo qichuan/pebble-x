@@ -238,24 +238,46 @@ async def timeline(feed: str = "following") -> dict:
     return {"feed": feed, "tweets": tweets}
 
 
+def _full_text_of(tweet) -> str:
+    return getattr(tweet, "full_text", None) or getattr(tweet, "text", "") or ""
+
+
 @app.get("/api/tweet", dependencies=[Depends(require_token)])
 async def tweet_detail(id: str) -> dict:
-    """Full text + top replies for a single tweet.
+    """Full text + top replies for a single tweet, fetched on demand.
 
-    Fetched on demand when the watch user opens a tweet and asks for comments
-    (never on the timeline poll). twikit's get_tweet_by_id populates both the
-    long-form note text and the reply list in one round trip.
+    The two goals are decoupled so the fragile part can't sink the whole
+    request. Full text comes from the stable TweetResultByRestIds path
+    (get_tweets_by_ids); replies come from the far more brittle TweetDetail
+    path (get_tweet_by_id), which breaks often and, for a retweet id, resolves
+    to the original tweet so the focal entry never matches and twikit raises.
+    A replies failure degrades to an empty comment list rather than a 502 — the
+    watch still shows the full text. Only a total failure (no text, no replies)
+    surfaces as 502.
     """
+    client = make_client()
+    full_text = ""
+    replies: list[dict] = []
+    detail = None
+
     try:
-        client = make_client()
+        tweets = await client.get_tweets_by_ids([id])
+        if tweets and tweets[0] is not None:
+            full_text = _full_text_of(tweets[0])
+    except Exception as e:
+        detail = str(e)
+
+    try:
         tweet = await client.get_tweet_by_id(id)
+        if not full_text:
+            full_text = _full_text_of(tweet)
         replies = [tweet_to_dict(r) for r in list(tweet.replies or [])[:MAX_REPLIES]]
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return {
-        "full_text": getattr(tweet, "full_text", None) or tweet.text or "",
-        "replies": replies,
-    }
+        detail = detail or str(e)
+
+    if not full_text and not replies:
+        raise HTTPException(status_code=502, detail=detail or "tweet unavailable")
+    return {"full_text": full_text, "replies": replies}
 
 
 @app.post("/api/like", dependencies=[Depends(require_token)])

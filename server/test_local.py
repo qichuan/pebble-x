@@ -50,7 +50,16 @@ class FakeClient:
     async def get_timeline(self, count=20):
         return [FakeTweet(i + 100) for i in range(count)]
 
+    async def get_tweets_by_ids(self, ids):
+        # Stable full-text path.
+        return [FakeTweet(
+            77, media=True,
+            full_text="A very long note tweet body that exceeds the legacy 280",
+        )]
+
     async def get_tweet_by_id(self, tid):
+        if tid == "9999":
+            raise Exception("TweetDetail exploded")  # brittle replies path
         replies = [FakeTweet(200 + j) for j in range(20)]  # server should cap
         return FakeTweet(
             77, media=True, reply_count=20, replies=replies,
@@ -182,6 +191,13 @@ with mock.patch("_common.Client", FakeClient):
     assert len(b["replies"]) == 12, len(b["replies"])  # capped at MAX_REPLIES
     assert b["replies"][0]["handle"] == "janedev", b["replies"][0]
     print("PASS  tweet detail -> full_text + capped replies")
+
+    # Brittle replies path fails -> still serve full text with no comments (no 502)
+    r = client.get("/api/tweet?id=9999", headers=AUTH)
+    b = r.json()
+    assert r.status_code == 200, b
+    assert b["full_text"].startswith("A very long note tweet") and b["replies"] == [], b
+    print("PASS  tweet detail -> degrades to full_text when replies fetch fails")
 
     r = client.get("/api/tweet?id=1077")
     assert r.status_code == 401
