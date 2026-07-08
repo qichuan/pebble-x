@@ -29,8 +29,13 @@ with a bare quoted key name as the detail, it's the same class of breakage —
 add the key here.
 """
 import re
+from functools import partial as _partial
 
+from twikit import Client as _Client
 from twikit import user as _user
+from twikit.errors import TweetNotAvailable as _TweetNotAvailable
+from twikit.tweet import tweet_from_data as _tweet_from_data
+from twikit.utils import Result as _Result, find_dict as _find_dict
 from twikit.x_client_transaction import transaction as _t
 
 # New format: ,1234:"ondemand.s"  with a separate  ,1234:"<hash>"  mapping.
@@ -139,9 +144,102 @@ def _patched_user_init(self, client, data):
     _orig_user_init(self, client, data)
 
 
+# Patch 3 — TweetDetail reply-cursor extraction (2026-07).
+# twikit 2.3.3's get_tweet_by_id parses the reply list, then reads the
+# "show more replies" cursor as `entry['content']['itemContent']['value']`
+# (and per-thread `reply['item']['itemContent']['value']`). X moved that
+# `value` out from under `itemContent`, so both raise KeyError('itemContent')
+# *after* the replies are built but *before* they're assigned — every
+# get_tweet_by_id call throws and the reply list is lost (surfaced as an empty
+# comments response). This override mirrors twikit's parsing exactly but reads
+# the cursor defensively and guards the empty-entries / missing-focal-tweet
+# edge cases. If replies break again, re-diff against twikit's get_tweet_by_id.
+
+
+def _cursor_value(node):
+    """Cursor value under the new shape (direct) or the old one (itemContent)."""
+    if not isinstance(node, dict):
+        return None
+    inner = node.get("itemContent")
+    if isinstance(inner, dict) and "value" in inner:
+        return inner["value"]
+    return node.get("value")
+
+
+async def _get_tweet_by_id(self, tweet_id, cursor=None):
+    response, _ = await self.gql.tweet_detail(tweet_id, cursor)
+
+    if "errors" in response:
+        raise _TweetNotAvailable(response["errors"][0]["message"])
+
+    found = _find_dict(response, "entries", find_one=True)
+    entries = found[0] if found else []
+    reply_to = []
+    replies_list = []
+    related_tweets = []
+    tweet = None
+
+    for entry in entries:
+        entry_id = entry.get("entryId", "")
+        if entry_id.startswith("cursor"):
+            continue
+        tweet_object = _tweet_from_data(self, entry)
+        if tweet_object is None:
+            continue
+
+        if entry_id.startswith("tweetdetailrelatedtweets"):
+            related_tweets.append(tweet_object)
+            continue
+
+        if entry_id == f"tweet-{tweet_id}":
+            tweet = tweet_object
+        elif tweet is None:
+            reply_to.append(tweet_object)
+        else:
+            replies = []
+            sr_cursor = None
+            show_replies = None
+            items = (entry.get("content") or {}).get("items") or []
+            for reply in items[1:]:
+                reply_entry_id = reply.get("entryId", "")
+                if "tweetcomposer" in reply_entry_id:
+                    continue
+                if "tweet" in reply_entry_id:
+                    rpl = _tweet_from_data(self, reply)
+                    if rpl is not None:
+                        replies.append(rpl)
+                if "cursor" in reply_entry_id:
+                    sr_cursor = _cursor_value(reply.get("item"))
+                    show_replies = _partial(self._show_more_replies, tweet_id, sr_cursor)
+            tweet_object.replies = _Result(replies, show_replies, sr_cursor)
+            replies_list.append(tweet_object)
+
+            display_type = _find_dict(entry, "tweetDisplayType", True)
+            if display_type and display_type[0] == "SelfThread":
+                tweet.thread = [tweet_object, *replies]
+
+    if tweet is None:
+        # No focal tweet in the conversation (e.g. a retweet id resolves to the
+        # original). Let the caller degrade to full text with no comments.
+        raise _TweetNotAvailable("focal tweet not found in conversation")
+
+    if entries and entries[-1].get("entryId", "").startswith("cursor"):
+        reply_next_cursor = _cursor_value(entries[-1].get("content"))
+        _fetch_more_replies = _partial(self._get_more_replies, tweet_id, reply_next_cursor)
+    else:
+        reply_next_cursor = None
+        _fetch_more_replies = None
+
+    tweet.replies = _Result(replies_list, _fetch_more_replies, reply_next_cursor)
+    tweet.reply_to = reply_to
+    tweet.related_tweets = related_tweets
+    return tweet
+
+
 def apply() -> None:
     _t.ClientTransaction.get_indices = _get_indices
     _user.User.__init__ = _patched_user_init
+    _Client.get_tweet_by_id = _get_tweet_by_id
 
 
 apply()
