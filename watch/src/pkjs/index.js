@@ -6,6 +6,7 @@
 var MAX_TWEETS = 15;
 var MAX_TEXT_BYTES = 437;   // must fit the watch-side buffer (TEXT_LEN 441)
 var MAX_AUTHOR_BYTES = 23;
+var MAX_NAME_BYTES = 23;    // display name, fits the watch NAME_LEN 24 buffer
 var MAX_BODY_BYTES = 1800;  // full text + replies blob; must fit the watch COMMENTS buffer
 var CACHE_FRESH_MS = 10 * 60 * 1000;  // older caches are re-fetched in the background
 var IMAGE_CHUNK_BYTES = 512;
@@ -166,6 +167,7 @@ function fetchTimeline(feed, callback) {
       return {
         id: t.id,
         author: t.handle || t.name || '?',
+        name: t.name || t.handle || '?',
         text: t.text || '',
         created_at: t.created_at,
         liked: !!t.favorited,
@@ -271,6 +273,7 @@ function sendTimeline(tweets) {
     enqueue({
       TWEET_INDEX: i,
       AUTHOR: truncateUtf8(t.author, MAX_AUTHOR_BYTES),
+      NAME: truncateUtf8(t.name || t.author, MAX_NAME_BYTES),
       TEXT: truncateUtf8(text, MAX_TEXT_BYTES),
       TIME_AGO: timeAgo(t.created_at),
       LIKED: t.liked ? 1 : 0,
@@ -342,16 +345,21 @@ function deliverImage(payload, feed) {
 
 // ---- Comments (full text + replies), lazy-loaded on demand ----
 
-function buildCommentsBody(fullText, replies) {
+function buildCommentsBody(fullText, replies, replyCount) {
   var body = fullText || '';
-  var n = replies.length;
+  var shown = replies.length;
+  if (shown === 0) return body;  // detail auto-loads; keep reply-less tweets clean
+  // Header count uses the tweet's reply_count metadata (same value the timeline
+  // footer shows) so the two screens agree; the list itself is only what we
+  // could actually fetch, which X caps and sometimes trims.
+  var n = replyCount > 0 ? replyCount : shown;
   body += '\n\n----------\n' +
           n + (n === 1 ? ' reply' : ' replies') + '\n\n';
-  for (var i = 0; i < n; i++) {
+  for (var i = 0; i < shown; i++) {
     var r = replies[i];
     var who = r.handle || r.name || '?';
     body += '@' + who + ' · ' + timeAgo(r.created_at) + '\n' + (r.text || '');
-    if (i < n - 1) body += '\n\n';
+    if (i < shown - 1) body += '\n\n';
   }
   return body;
 }
@@ -390,7 +398,7 @@ function deliverComments(payload, feed) {
       if (data && data.replies_error) {
         console.log('comments: 0 replies for ' + tweet.id + ' -> ' + data.replies_error);
       }
-      sendComments(requestId, buildCommentsBody(fullText, replies));
+      sendComments(requestId, buildCommentsBody(fullText, replies, tweet.reply_count));
     });
 }
 

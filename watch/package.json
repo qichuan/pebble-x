@@ -56,7 +56,8 @@
       "COMMENTS_CHUNK_COUNT",
       "COMMENTS_OFFSET",
       "COMMENTS_DATA",
-      "COMMENTS_ERROR"
+      "COMMENTS_ERROR",
+      "NAME"
     ],
     "resources": {
       "media": [

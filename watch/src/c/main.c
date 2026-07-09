@@ -4,6 +4,7 @@
 
 #define MAX_TWEETS 15
 #define AUTHOR_LEN 24
+#define NAME_LEN 24
 #define TEXT_LEN 441   // UTF-8 bytes; pkjs truncates to fit
 #define TIME_LEN 8
 
@@ -38,6 +39,7 @@
 #define COMMENTS_ERROR_SERVER 3
 #define COMMENTS_MAX_BYTES 1900
 #define DETAIL_BODY_LEN 2048
+#define DETAIL_BODY_TOP 48   // below the name + @handle·time header lines
 
 // Comment-load state for the open detail window
 #define COMMENTS_NONE 0
@@ -52,6 +54,7 @@
 #define ACCENT_COLOR PBL_IF_COLOR_ELSE(GColorVividCerulean, GColorBlack)
 
 typedef struct {
+  char name[NAME_LEN];   // display name (shown on top); author is the @handle
   char author[AUTHOR_LEN];
   char text[TEXT_LEN];
   char time_ago[TIME_LEN];
@@ -88,10 +91,12 @@ static AppTimer *s_refresh_timer = NULL;
 
 static Window *s_detail_window;
 static ScrollLayer *s_scroll_layer;
-static TextLayer *s_detail_header_layer;
+static TextLayer *s_detail_header_layer;  // display name (bold, top)
+static TextLayer *s_detail_handle_layer;  // @handle · time (second line)
 static TextLayer *s_detail_body_layer;
 static int s_detail_index = -1;
-static char s_detail_header[AUTHOR_LEN + TIME_LEN + 8];
+static char s_detail_header[NAME_LEN];
+static char s_detail_handle[AUTHOR_LEN + TIME_LEN + 8];
 // Detail body buffer: the tweet text, then either a "load comments" hint or,
 // once loaded, the phone-built full-text + replies blob.
 static char s_detail_body[DETAIL_BODY_LEN];
@@ -226,17 +231,13 @@ static void prv_detail_relayout_body(void) {
   frame.size.h = body_size.h + 8;
   layer_set_frame(text_layer_get_layer(s_detail_body_layer), frame);
   scroll_layer_set_content_size(s_scroll_layer,
-                                GSize(bounds.size.w, 28 + body_size.h + 16));
+                                GSize(bounds.size.w, DETAIL_BODY_TOP + body_size.h + 16));
 }
 
-// Initial body: the tweet text, plus a hint to load the rest if replies exist.
+// Initial body: just the tweet text, shown for the instant before the
+// auto-load replaces it with "Loading..." then the full text + replies.
 static void prv_build_detail_body(Tweet *t) {
-  if (t->reply_count > 0) {
-    snprintf(s_detail_body, sizeof(s_detail_body),
-             "%s\n\n[ Press DOWN for full text and replies ]", t->text);
-  } else {
-    snprintf(s_detail_body, sizeof(s_detail_body), "%s", t->text);
-  }
+  snprintf(s_detail_body, sizeof(s_detail_body), "%s", t->text);
   prv_fix_utf8_tail(s_detail_body);
 }
 
@@ -382,11 +383,11 @@ static void prv_detail_down_handler(ClickRecognizerRef recognizer, void *context
     }
     return;
   }
-  // A fresh DOWN press while already at the bottom loads the comments (once).
+  // Comments auto-load on open; a fresh DOWN at the bottom is the retry path
+  // after a load error (state is back to NONE only then).
   if (!click_recognizer_is_repeating(recognizer) &&
       s_comments_state == COMMENTS_NONE &&
       s_detail_index >= 0 && s_detail_index < s_tweet_count &&
-      s_tweets[s_detail_index].reply_count > 0 &&
       prv_detail_at_bottom()) {
     prv_load_comments();
     return;
@@ -425,7 +426,8 @@ static void prv_detail_window_load(Window *window) {
   const int width = bounds.size.w - margin * 2;
 
   Tweet *t = &s_tweets[s_detail_index];
-  snprintf(s_detail_header, sizeof(s_detail_header), "@%s · %s", t->author, t->time_ago);
+  snprintf(s_detail_header, sizeof(s_detail_header), "%s", t->name[0] ? t->name : t->author);
+  snprintf(s_detail_handle, sizeof(s_detail_handle), "@%s · %s", t->author, t->time_ago);
 
   s_scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_shadow_hidden(s_scroll_layer, false);
@@ -434,22 +436,29 @@ static void prv_detail_window_load(Window *window) {
   });
   scroll_layer_set_click_config_onto_window(s_scroll_layer, window);
 
+  // Display name (bold) on top, @handle · time below it.
   s_detail_header_layer = text_layer_create(GRect(margin, 2, width, 24));
   text_layer_set_font(s_detail_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_color(s_detail_header_layer, ACCENT_COLOR);
   text_layer_set_text(s_detail_header_layer, s_detail_header);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_header_layer));
 
+  s_detail_handle_layer = text_layer_create(GRect(margin, 25, width, 22));
+  text_layer_set_font(s_detail_handle_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text_color(s_detail_handle_layer, ACCENT_COLOR);
+  text_layer_set_text(s_detail_handle_layer, s_detail_handle);
+  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_handle_layer));
+
   prv_build_detail_body(t);
   GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
   GSize body_size = graphics_text_layout_get_content_size(
       s_detail_body, body_font, GRect(0, 0, width, 4000), GTextOverflowModeWordWrap, GTextAlignmentLeft);
-  s_detail_body_layer = text_layer_create(GRect(margin, 28, width, body_size.h + 8));
+  s_detail_body_layer = text_layer_create(GRect(margin, DETAIL_BODY_TOP, width, body_size.h + 8));
   text_layer_set_font(s_detail_body_layer, body_font);
   text_layer_set_text(s_detail_body_layer, s_detail_body);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_detail_body_layer));
 
-  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, 28 + body_size.h + 16));
+  scroll_layer_set_content_size(s_scroll_layer, GSize(bounds.size.w, DETAIL_BODY_TOP + body_size.h + 16));
   layer_add_child(window_layer, scroll_layer_get_layer(s_scroll_layer));
 
   s_action_overlay_layer = layer_create(GRect(bounds.size.w - ACTION_OVERLAY_WIDTH, 0,
@@ -461,6 +470,9 @@ static void prv_detail_window_load(Window *window) {
   s_action_retweet_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_RETWEET_ICON);
   s_action_like_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_HEART_ICON);
   s_action_image_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_IMG_ICON);
+
+  // Auto-load the full (untruncated) text + replies as soon as detail opens.
+  prv_load_comments();
 }
 
 static void prv_detail_window_unload(Window *window) {
@@ -478,6 +490,7 @@ static void prv_detail_window_unload(Window *window) {
   layer_destroy(s_action_overlay_layer);
   s_action_overlay_layer = NULL;
   text_layer_destroy(s_detail_header_layer);
+  text_layer_destroy(s_detail_handle_layer);
   text_layer_destroy(s_detail_body_layer);
   scroll_layer_destroy(s_scroll_layer);
   window_destroy(window);
@@ -789,7 +802,11 @@ static uint16_t prv_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, 
 }
 
 static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  return cell_index->row == 0 ? 34 : 68;
+  if (cell_index->row == 0) {
+    return 34;  // feed status row
+  }
+  // One tweet fills the whole screen; UP/DOWN pages through them.
+  return layer_get_bounds(menu_layer_get_layer(menu_layer)).size.h;
 }
 
 static void prv_refresh_tick(void *context) {
@@ -824,6 +841,12 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   if (cell_index->row == 0) {
     // Status row: shows the CURRENT feed; SELECT opens the action overlay.
     // While a refresh is in flight the dot ripples (expanding ring).
+    // Selection highlight is drawn here (accent fill) so the tweet cards can
+    // stay a plain light view instead of the menu's inverted black.
+    if (highlighted) {
+      graphics_context_set_fill_color(ctx, ACCENT_COLOR);
+      graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+    }
     GColor fg = highlighted ? GColorWhite : ACCENT_COLOR;
     GPoint dot = GPoint(15, bounds.size.h / 2 - 1);
     graphics_context_set_fill_color(ctx, fg);
@@ -842,28 +865,52 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     return;
   }
 
+  // Full-screen tweet card: display name (bold) + @handle · time at top, the
+  // wrapped body filling the middle, and a reply-count footer at the bottom.
   Tweet *t = &s_tweets[prv_row_to_tweet(cell_index->row)];
 
-  char author_line[AUTHOR_LEN + TIME_LEN + 10];
-  snprintf(author_line, sizeof(author_line), "@%s · %s%s",
+  const int hmargin = PBL_IF_ROUND_ELSE(18, 6);
+  const int width = bounds.size.w - hmargin * 2;
+  const int name_h = 22;
+  const int handle_h = 20;
+  const int footer_h = 22;
+  const int body_top = name_h + handle_h + 2;
+  const int body_h = bounds.size.h - body_top - footer_h;
+
+  const char *name = t->name[0] ? t->name : t->author;
+  char handle_line[AUTHOR_LEN + TIME_LEN + 10];
+  snprintf(handle_line, sizeof(handle_line), "@%s · %s%s",
            t->author, t->time_ago, t->liked ? " ❤" : "");
 
-  char snippet[72];
-  size_t j = 0;
-  for (const char *p = t->text; *p && j < sizeof(snippet) - 1; p++) {
-    snippet[j++] = (*p == '\n') ? ' ' : *p;
+  char footer[24];
+  if (t->reply_count > 0) {
+    snprintf(footer, sizeof(footer), "%d %s", t->reply_count,
+             t->reply_count == 1 ? "reply" : "replies");
+  } else {
+    footer[0] = '\0';
   }
-  snippet[j] = '\0';
-  prv_fix_utf8_tail(snippet);
 
-  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : ACCENT_COLOR);
-  graphics_draw_text(ctx, author_line, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(6, -2, bounds.size.w - 12, 20), GTextOverflowModeTrailingEllipsis,
+  // A tweet fills the whole screen, so keep it a plain light card (accent
+  // header, black body) rather than the menu's inverted-black selection.
+  graphics_context_set_text_color(ctx, ACCENT_COLOR);
+  graphics_draw_text(ctx, name, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(hmargin, 0, width, name_h), GTextOverflowModeTrailingEllipsis,
                      GTextAlignmentLeft, NULL);
-  graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
-  graphics_draw_text(ctx, snippet, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                     GRect(6, 18, bounds.size.w - 12, 46), GTextOverflowModeTrailingEllipsis,
+  graphics_draw_text(ctx, handle_line, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(hmargin, name_h, width, handle_h), GTextOverflowModeTrailingEllipsis,
                      GTextAlignmentLeft, NULL);
+
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, t->text, fonts_get_system_font(FONT_KEY_GOTHIC_24),
+                     GRect(hmargin, body_top, width, body_h), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
+
+  if (footer[0]) {
+    graphics_context_set_text_color(ctx, ACCENT_COLOR);
+    graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(hmargin, bounds.size.h - footer_h, width, footer_h),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+  }
 }
 
 static void prv_toggle_feed(void) {
@@ -968,7 +1015,9 @@ static void prv_timeline_window_load(Window *window) {
     .select_click = prv_select_click,
     .select_long_click = prv_select_long_click,
   });
-  menu_layer_set_highlight_colors(s_menu_layer, GColorBlack, GColorWhite);
+  // White highlight bg: tweet cards render light. The status row draws its own
+  // accent highlight (see prv_draw_row), and detail scroll shadows stay legible.
+  menu_layer_set_highlight_colors(s_menu_layer, GColorWhite, GColorBlack);
   menu_layer_set_click_config_onto_window(s_menu_layer, window);
   // Wrap the menu's provider so BACK always exits (see prv_timeline_click_config).
   s_menu_click_config = window_get_click_config_provider(window);
@@ -1210,10 +1259,15 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       tweet->has_media = false;
       tweet->media_count = 0;
       tweet->reply_count = 0;
+      tweet->name[0] = '\0';
       Tuple *field;
       if ((field = dict_find(iter, MESSAGE_KEY_AUTHOR))) {
         snprintf(tweet->author, sizeof(tweet->author), "%s", field->value->cstring);
         prv_fix_utf8_tail(tweet->author);
+      }
+      if ((field = dict_find(iter, MESSAGE_KEY_NAME))) {
+        snprintf(tweet->name, sizeof(tweet->name), "%s", field->value->cstring);
+        prv_fix_utf8_tail(tweet->name);
       }
       if ((field = dict_find(iter, MESSAGE_KEY_TEXT))) {
         snprintf(tweet->text, sizeof(tweet->text), "%s", field->value->cstring);
